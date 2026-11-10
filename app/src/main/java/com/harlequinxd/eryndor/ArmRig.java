@@ -38,11 +38,6 @@ final class ArmRig {
         return true;
     }
 
-    /** Where the swing is, 0..1, or -1 when not swinging. */
-    float swingPhase() {
-        return swingT < 0f ? -1f : Math.min(1f, swingT / SWING_TIME);
-    }
-
     boolean swinging() {
         return swingT >= 0f;
     }

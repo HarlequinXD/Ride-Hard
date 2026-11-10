@@ -27,6 +27,9 @@ uniform sampler2D uLeafAtlas; // 8 leaf shapes, rgb detail + alpha outline
 uniform vec4 uTreeMeta[60];   // 6 per species: min+gx, max+gy, cellBase gz bark halfWidth, leafA+trunkR, leafB, bark+height
 uniform vec4 uPreview;        // Tree Builder: xyz base position, w = species slot (-1 = off)
 uniform float uPreviewYaw;
+uniform sampler2D uArmCol;    // first-person arms: colour, back view rows 0-351, palm view 352-703
+uniform sampler2D uArmNrm;    // same layout: arm-local normals from the normal map
+uniform sampler2D uArmHgt;    // r = top (back of hand) height, g = bottom (palm) height
 uniform mat3 uArmRot[2];      // arm-local -> camera space (0 right arm, 1 left arm)
 uniform vec3 uArmPos[2];      // arm-local origin (the shoulder end) in camera space, metres
 uniform vec4 uFing[10];       // per finger (right arm then left, thumb first): knuckle u, z, direction u, z
@@ -37,19 +40,6 @@ uniform vec3 uSwordB;         //   haft direction (out of the thumb side),
 uniform vec3 uSwordE;         //   head direction
 uniform vec4 uClods[48];      // dirt clods knocked loose by the pickaxe: xyz, radius
 uniform int uClodN;
-// the third-person character, per pixel (see Character.java): 16 rigid parts, each a 1 cm grid of
-// signed distances + nearest texture coordinate, packed in one 3D atlas
-uniform float uCharShow;
-uniform highp sampler3D uCharDist;   // R: signed distance, +-4 cm
-uniform highp sampler3D uCharUV;     // RG: u, BA: v (16 bits each) of the nearest surface point
-uniform sampler2D uCharAtlas;        // three bands: colour, normals (part frames), height
-uniform vec4 uPartM[48];             // per part: 3 rows, world -> atlas cell coordinates
-uniform vec4 uPartBox[16];           // per part: atlas x0, nx, ny, nz
-uniform vec3 uCharDims;              // atlas size in cells
-uniform vec4 uCharSphere;            // bounding sphere (shader frame)
-uniform vec4 uToolM[3];              // third person: world -> pickaxe grid (1.25 mm)
-uniform float uThird;                // 1 = third-person view
-uniform float uCamNear;              // third person: trees nearer than this are cut away
 uniform float uSwordShow;
 uniform highp sampler2DArray uSurfCol;  // ground texture sets, one layer each: 0 grass, 1 cobblestone
 uniform highp sampler2DArray uSurfNH;   // their normal maps (r, g) and height maps (b)
@@ -890,85 +880,6 @@ vec3 swordNormal(vec3 q) {
                    + k.yxy * swordSdf(q + k.yxy * e).x + k.xxx * swordSdf(q + k.xxx * e).x);
 }
 
-// shading of the pickaxe at tool-space point sq (material smat), world normal nw, seen along d
-vec3 shadePick(vec3 sq, float smat, vec3 nw, vec3 d, float swordOpen, float slamp) {
-    // point-sampled: pits, scratches and grime on 2.5 mm texels
-    vec2 tq = floor(vec2(sq.x * 0.5 + sq.y, sq.z * 0.5));
-    float wear = hash(tq) * 0.5 + hash(floor(tq / 6.0)) * 0.5;
-    // dirt caked on from digging: thickest on the points and the lower head, smears on the haft
-    float grime = vnoise(sq.xz * 0.045 + sq.y * 0.03) * 0.65 + hash(floor(tq / 3.0)) * 0.35;
-    vec3 sc;
-    if (smat < 0.5) {                       // forged iron, dark and dull, bright where it bites
-        float tipK = smoothstep(110.0, 230.0, abs(sq.x - 30.0));
-        float below = smoothstep(10.0, -25.0, sq.z - PK_HEAD_Z);
-        float dirt = smoothstep(0.62, 0.80, grime + 0.22 * tipK + 0.10 * below);
-        float shine = smoothstep(185.0, 240.0, sq.x) + smoothstep(135.0, 172.0, -sq.x);   // worn bright edges
-        vec3 iron = vec3(0.46, 0.46, 0.47) * (0.80 + 0.30 * wear) + vec3(0.25) * shine;
-        vec3 soil = vec3(0.30, 0.21, 0.13) * (0.70 + 0.45 * wear);
-        vec3 alb = mix(iron, soil, dirt);
-        sc = pbr(alb, nw, -d, mix(mix(0.48, 0.28, shine), 0.95, dirt), mix(1.0, 0.0, dirt), 1.0, swordOpen, 1.0, slamp, 0.0);
-    } else {                                // ash haft: grain along it, polished by the hand, muddy at the butt
-        float grain = 0.5 + 0.5 * sin(sq.x * 0.9 + vnoise(vec2(sq.z * 0.02, sq.x * 0.1)) * 6.0 + sq.z * 0.01);
-        vec3 wood = vec3(0.47, 0.33, 0.19) * (0.78 + 0.22 * grain) * (0.85 + 0.25 * wear);
-        float dirt = smoothstep(0.66, 0.84, grime + 0.30 * smoothstep(-30.0, -80.0, sq.z) + 0.15 * smoothstep(250.0, 370.0, sq.z));
-        dirt *= 1.0 - smoothstep(60.0, 0.0, abs(sq.z - 10.0)) * 0.8;          // the grip is rubbed clean
-        vec3 soil = vec3(0.29, 0.21, 0.14) * (0.75 + 0.4 * wear);
-        sc = pbr(mix(wood, soil, dirt), nw, -d, mix(0.55, 0.95, dirt), 0.0, 1.0, swordOpen, 1.0, slamp, 0.0);
-    }
-    return sc;
-}
-
-// ---------------------------------------------------------------------------------------------
-// The character: the union of the posed parts, blended smoothly at the joints.
-vec3 partCell(int i, vec3 p) {
-    vec4 q = vec4(p, 1.0);
-    return vec3(dot(uPartM[i * 3], q), dot(uPartM[i * 3 + 1], q), dot(uPartM[i * 3 + 2], q));
-}
-vec3 partDir(int i, vec3 d) {
-    return vec3(dot(uPartM[i * 3].xyz, d), dot(uPartM[i * 3 + 1].xyz, d), dot(uPartM[i * 3 + 2].xyz, d));
-}
-// distance (metres) from p to part i, given p in that part's cells
-float partDist(int i, vec3 c) {
-    vec4 b = uPartBox[i];
-    vec3 lo = vec3(b.x + 0.5, 0.5, 0.5), hi = vec3(b.x + b.y - 0.5, b.z - 0.5, b.w - 0.5);
-    vec3 k = clamp(c, lo, hi);
-    float out_ = length(c - k) * 0.01;
-    if (out_ > 0.03) return out_ + 0.02;
-    return textureLod(uCharDist, k / uCharDims, 0.0).r * 0.08 - 0.04 + out_;
-}
-float charDist(vec3 p, out int best) {
-    float d = 1e9, bd = 1e9;
-    best = 0;
-    for (int i = 0; i < 16; i++) {
-        float di = partDist(i, partCell(i, p));
-        if (di < bd) { bd = di; best = i; }
-        d = smin(d, di, 0.012);
-    }
-    return d;
-}
-// texture coordinate at a cell position: trilinear over the 8 nearest cells, skipping any across a
-// texture seam (so the colour and relief are sharp to the pixel, not to the 1 cm grid)
-vec2 charUV(vec3 c) {
-    vec3 b = floor(c - 0.5), f = c - 0.5 - b;
-    vec2 ref = vec2(0.0), acc = vec2(0.0);
-    float wsum = 0.0, wbest = -1.0;
-    vec2 uvs[8];
-    float ws[8];
-    for (int k = 0; k < 8; k++) {
-        vec3 o = vec3(float(k & 1), float((k >> 1) & 1), float(k >> 2));
-        vec4 t = texelFetch(uCharUV, ivec3(b + o), 0) * 255.0;
-        uvs[k] = vec2(t.r * 256.0 + t.g, t.b * 256.0 + t.a) / 65535.0;
-        vec3 w3 = mix(1.0 - f, f, o);
-        ws[k] = w3.x * w3.y * w3.z;
-        if (ws[k] > wbest) { wbest = ws[k]; ref = uvs[k]; }
-    }
-    for (int k = 0; k < 8; k++) {
-        if (length(uvs[k] - ref) < 0.02) { acc += uvs[k] * ws[k]; wsum += ws[k]; }
-    }
-    return acc / max(wsum, 1e-5);
-}
-float charHeight(vec2 uv) { return textureLod(uCharAtlas, uv + vec2(0.0, 2.0 / 3.0), 0.0).r; }
-
 // Rock texture set wrapped onto any slope (walls, ceilings, tunnels, boulders): three planar
 // projections blended by the normal, with the normal maps combined the same way ("whiteout").
 vec3 rockTriplanar(vec3 p, vec3 n, float t, float layer, out vec3 nOut) {
@@ -1156,12 +1067,6 @@ void main() {
     rough = mix(rough, rough * 0.35, wetK);
     float trans = (mid < 0.5 || mid > 4.5 || isFern > 0.5) ? 0.25 + 0.25 * isFern : 0.0;
     float sunLit = 1.0 - 0.85 * shadow;                                // cloud shadow
-    if (uCharShow > 0.5 && hit > 0.5) {         // her shadow on the ground, soft, away from the sun
-        vec2 sc = uCharSphere.xz - uSunDir.xz / max(uSunDir.y, 0.35) * 0.6;
-        float blob = (1.0 - smoothstep(0.10, 0.48, length(hp.xz - sc))) * smoothstep(1.4, 0.3, abs(hp.y - (uCharSphere.y - 0.9)));
-        sunLit *= 1.0 - 0.75 * blob;
-        light *= 1.0 - 0.25 * blob;
-    }
     if (isGrass > 0.5) {
         sunLit *= clamp(gt.a * 2.0 - 1.0, 0.0, 1.0);                     // tree shadows on textured ground
         if (T < SURF_FAR) sunLit *= surfShadow(wp, T);                   // self-shadowed relief
@@ -1192,107 +1097,6 @@ void main() {
     vec3 missCol = d.y > 0.0 ? sky : uFogCol;
     vec3 col = mix(missCol, ground, hit);
     col += uFlash * vec3(0.55, 0.60, 0.75) * (0.4 + 0.6 * (1.0 - hit)) * open;
-
-    // ---- the character (third person): march the union of her parts inside her bounding sphere
-    if (uCharShow > 0.5) {
-        vec3 oc = ro - uCharSphere.xyz;
-        float b = dot(oc, d), h = b * b - (dot(oc, oc) - uCharSphere.w * uCharSphere.w);
-        if (h > 0.0) {
-            float sq = sqrt(h);
-            float t = max(-b - sq, 0.05), tEnd = min(-b + sq, hit > 0.5 ? T : FAR);
-            int part = 0;
-            bool got = false;
-            for (int i = 0; i < 96; i++) {
-                if (t > tEnd) break;
-                float dc = charDist(ro + d * t, part);
-                if (dc < 0.0012) { got = true; break; }
-                t += max(dc, 0.002);
-            }
-            if (got) {
-                vec3 p = ro + d * t;
-                vec3 c = partCell(part, p);
-                // surface normal from the part's distances (cell space), and the view in cell space
-                const vec2 kk = vec2(1.0, -1.0);
-                vec3 g = kk.xyy * partDist(part, c + kk.xyy * 0.5) + kk.yyx * partDist(part, c + kk.yyx * 0.5)
-                       + kk.yxy * partDist(part, c + kk.yxy * 0.5) + kk.xxx * partDist(part, c + kk.xxx * 0.5);
-                vec3 nl = normalize(g);
-                vec3 vl = normalize(partDir(part, d));
-                // ---- parallax occlusion from the height map: the texture's own relief, per pixel.
-                // How the texture runs over the surface comes from the stored coordinates' gradient,
-                // so no tangents are needed: a step of w cells along the surface moves uv by J w.
-                vec2 uv0 = charUV(c);
-                vec2 du = charUV(c + vec3(0.5, 0.0, 0.0)) - uv0, dv = charUV(c + vec3(0.0, 0.5, 0.0)) - uv0,
-                     dw = charUV(c + vec3(0.0, 0.0, 0.5)) - uv0;
-                if (length(du) > 0.01) du = vec2(0.0);       // across a seam: no parallax that way
-                if (length(dv) > 0.01) dv = vec2(0.0);
-                if (length(dw) > 0.01) dw = vec2(0.0);
-                mat3x2 J = mat3x2(du * 2.0, dv * 2.0, dw * 2.0);   // uv per cell
-                float vn = dot(vl, nl);
-                vec3 vt = vl - nl * vn;                            // view direction along the surface
-                const float DEPTH = 0.45;                          // relief depth in cells (4.5 mm)
-                vec3 slope = vt / max(-vn, 0.3) * DEPTH;           // surface drift per unit of depth
-                vec2 uv = uv0;
-                float prevH = 1.0, prevD = 0.0, depth = 0.0;
-                const int PSTEPS = 10;
-                if (t < 12.0) {
-                    for (int k = 1; k <= PSTEPS; k++) {
-                        depth = float(k) / float(PSTEPS);
-                        vec2 u2 = uv0 + J * (slope * depth);
-                        float hh = 1.0 - charHeight(u2);           // how deep the surface is here
-                        if (hh <= depth) {                         // crossed it: refine linearly
-                            float a = prevH - prevD, bb = hh - depth;
-                            float w = a / max(a - bb, 1e-4);
-                            uv = uv0 + J * (slope * mix(prevD, depth, w));
-                            break;
-                        }
-                        prevH = hh;
-                        prevD = depth;
-                        uv = u2;
-                    }
-                }
-                vec3 alb = textureLod(uCharAtlas, uv, 0.0).rgb;
-                vec3 tn = textureLod(uCharAtlas, uv + vec2(0.0, 1.0 / 3.0), 0.0).rgb * 2.0 - 1.0;
-                float hgt = charHeight(uv);
-                // part frame -> world: the transpose of the part matrix's rotation
-                mat3 Mt = transpose(mat3(uPartM[part * 3].xyz, uPartM[part * 3 + 1].xyz, uPartM[part * 3 + 2].xyz));
-                vec3 nS = normalize(Mt * nl);
-                vec3 nT = length(tn) > 0.3 ? normalize(Mt * tn) : nS;
-                vec3 n = normalize(mix(nS, nT, 0.85 * smoothstep(-0.2, 0.3, dot(nT, nS))));
-                bool hair = uv.x > 2.0 / 3.0;
-                float ao = mix(0.62, 1.0, smoothstep(0.15, 0.65, hgt));     // creases from the height map
-                float rough = hair ? 0.45 : 0.72;
-                float co = volOpen(p + n * 0.3);
-                float cdark = clamp(1.0 - co * (1.0 - uStars * 0.85), 0.0, 1.0);
-                vec3 cc = pbr(alb, n, -d, rough, 0.0, 1.0 - 0.85 * coverage(cloudField(uCloudO + (p.xz - ro.xz))), co, ao,
-                              1.4 / (1.0 + t * t * 0.09) * cdark, hair ? 0.1 : 0.2);
-                cc = mix(cc, mix(vec3(0.0), uFogCol, co), 1.0 - exp(-t * uFog));
-                col = cc;
-                T = t;
-                hit = 1.0;
-                shaftMask = 0.0;
-            }
-        }
-        // the pickaxe in her right hand
-        if (uSwordShow > 0.5 && uThird > 0.5) {
-            vec3 tro = vec3(dot(uToolM[0], vec4(ro, 1.0)), dot(uToolM[1], vec4(ro, 1.0)), dot(uToolM[2], vec4(ro, 1.0)));
-            vec3 trd = vec3(dot(uToolM[0].xyz, d), dot(uToolM[1].xyz, d), dot(uToolM[2].xyz, d));
-            vec3 sq;
-            float smat;
-            float st = traceSword(tro, trd, sq, smat);
-            if (st > 0.0 && st < (hit > 0.5 ? T : FAR)) {
-                mat3 Tt = transpose(mat3(uToolM[0].xyz, uToolM[1].xyz, uToolM[2].xyz));
-                vec3 nw = normalize(Tt * swordNormal(sq));
-                vec3 pp = ro + d * st;
-                float po = volOpen(pp);
-                float pdark = clamp(1.0 - po * (1.0 - uStars * 0.85), 0.0, 1.0);
-                col = shadePick(sq, smat, nw, d, po, 1.4 / (1.0 + st * st * 0.09) * pdark);
-                col = mix(col, mix(vec3(0.0), uFogCol, po), 1.0 - exp(-st * uFog));
-                T = st;
-                hit = 1.0;
-                shaftMask = 0.0;
-            }
-        }
-    }
 
     // ---- clods of dirt knocked loose by the pickaxe: small lumpy balls, flying, rolling, settling
     for (int i = 0; i < 48; i++) {
@@ -1362,7 +1166,7 @@ void main() {
                     int pid;
                     vec2 uv;
                     float th = traceSpecies(sp, rol, rdl, tLimit / sz, sz, pid, uv);
-                    if (th > 0.0 && th * sz > uCamNear) {      // (third person: no leaves between you and her)
+                    if (th > 0.0) {
                         bestT = th * sz; bestSp = sp; bestPid = pid; bestUv = uv;
                         bestHl = rol + rdl * th; bestRdl = rdl; bestYaw = yaw; bestScale = sz;
                         break;
@@ -1416,7 +1220,29 @@ void main() {
             nw = vec3(nw.x * cy - nw.z * sy, nw.y, nw.x * sy + nw.z * cy);
             float sdark = clamp(1.0 - swordOpen * (1.0 - uStars * 0.85), 0.0, 1.0);
             float slamp = 1.0 * sdark;
-            vec3 sc = shadePick(sq, smat, nw, d, swordOpen, slamp);
+            // point-sampled: pits, scratches and grime on 2.5 mm texels
+            vec2 tq = floor(vec2(sq.x * 0.5 + sq.y, sq.z * 0.5));
+            float wear = hash(tq) * 0.5 + hash(floor(tq / 6.0)) * 0.5;
+            // dirt caked on from digging: thickest on the points and the lower head, smears on the haft
+            float grime = vnoise(sq.xz * 0.045 + sq.y * 0.03) * 0.65 + hash(floor(tq / 3.0)) * 0.35;
+            vec3 sc;
+            if (smat < 0.5) {                       // forged iron, dark and dull, bright where it bites
+                float tipK = smoothstep(110.0, 230.0, abs(sq.x - 30.0));
+                float below = smoothstep(10.0, -25.0, sq.z - PK_HEAD_Z);
+                float dirt = smoothstep(0.62, 0.80, grime + 0.22 * tipK + 0.10 * below);
+                float shine = smoothstep(185.0, 240.0, sq.x) + smoothstep(135.0, 172.0, -sq.x);   // worn bright edges
+                vec3 iron = vec3(0.46, 0.46, 0.47) * (0.80 + 0.30 * wear) + vec3(0.25) * shine;
+                vec3 soil = vec3(0.30, 0.21, 0.13) * (0.70 + 0.45 * wear);
+                vec3 alb = mix(iron, soil, dirt);
+                sc = pbr(alb, nw, -d, mix(mix(0.48, 0.28, shine), 0.95, dirt), mix(1.0, 0.0, dirt), 1.0, swordOpen, 1.0, slamp, 0.0);
+            } else {                                // ash haft: grain along it, polished by the hand, muddy at the butt
+                float grain = 0.5 + 0.5 * sin(sq.x * 0.9 + vnoise(vec2(sq.z * 0.02, sq.x * 0.1)) * 6.0 + sq.z * 0.01);
+                vec3 wood = vec3(0.47, 0.33, 0.19) * (0.78 + 0.22 * grain) * (0.85 + 0.25 * wear);
+                float dirt = smoothstep(0.66, 0.84, grime + 0.30 * smoothstep(-30.0, -80.0, sq.z) + 0.15 * smoothstep(250.0, 370.0, sq.z));
+                dirt *= 1.0 - smoothstep(60.0, 0.0, abs(sq.z - 10.0)) * 0.8;          // the grip is rubbed clean
+                vec3 soil = vec3(0.29, 0.21, 0.14) * (0.75 + 0.4 * wear);
+                sc = pbr(mix(wood, soil, dirt), nw, -d, mix(0.55, 0.95, dirt), 0.0, 1.0, swordOpen, 1.0, slamp, 0.0);
+            }
             col = sc;
             shaftMask = 0.0;
         }

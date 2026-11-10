@@ -143,10 +143,10 @@ final class Overlay {
 
         if (s.help) {
             String[] lines = s.pad
-                    ? new String[]{"Left stick  walk", "Right stick  look", "Y  change the weather", "X  speed up time", "RT  swing the pickaxe (dig)", "LB  first / third person", "B  " + (s.sword ? "put away" : "take out") + " the pickaxe",
+                    ? new String[]{"Left stick  walk", "Right stick  look", "Y  change the weather", "X  speed up time", "RT  swing the pickaxe (dig)", "B  " + (s.sword ? "put away" : "take out") + " the pickaxe",
                     "Click right stick  invert look" + (s.invertY ? " (on)" : ""), "View / Menu  hide this help"}
                     : new String[]{"WASD / arrows  walk", "Mouse  look (Esc frees the mouse)", "Q  change the weather",
-                    "T  speed up time", "Left click  swing the pickaxe (dig)", "V  first / third person", "F  " + (s.sword ? "put away" : "take out") + " the pickaxe", "I  invert look" + (s.invertY ? " (on)" : ""), "F11  full screen", "F1  hide this help"};
+                    "T  speed up time", "Left click  swing the pickaxe (dig)", "F  " + (s.sword ? "put away" : "take out") + " the pickaxe", "I  invert look" + (s.invertY ? " (on)" : ""), "F11  full screen", "F1  hide this help"};
             g.setFont(new Font(Font.SERIF, Font.PLAIN, Math.round(15 * u)));
             float lh = 21 * u, bx = 22 * u, by = h - 22 * u - lines.length * lh;
             g.setColor(new Color(20, 14, 10, 110));
