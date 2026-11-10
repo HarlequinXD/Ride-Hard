@@ -26,6 +26,14 @@ uniform sampler2D uLeafAtlas; // 8 leaf shapes, rgb detail + alpha outline
 uniform vec4 uTreeMeta[60];   // 6 per species: min+gx, max+gy, cellBase gz bark halfWidth, leafA+trunkR, leafB, bark+height
 uniform vec4 uPreview;        // Tree Builder: xyz base position, w = species slot (-1 = off)
 uniform float uPreviewYaw;
+uniform sampler2D uArmCol;    // first-person arms: colour, back view rows 0-351, palm view 352-703
+uniform sampler2D uArmNrm;    // same layout: arm-local normals from the normal map
+uniform sampler2D uArmHgt;    // r = top (back of hand) height, g = bottom (palm) height
+uniform mat3 uArmRot[2];      // arm-local -> camera space (0 right arm, 1 left arm)
+uniform vec3 uArmPos[2];      // arm-local origin (the shoulder end) in camera space, metres
+uniform vec4 uFing[10];       // per finger (right arm then left, thumb first): knuckle u, z, direction u, z
+uniform float uFingK[10];     // per finger curl: curvature (radians per grid unit)
+uniform float uArmShow;
 
 uniform vec2 uTanHalf;
 uniform float uYaw;
@@ -405,6 +413,118 @@ void shadeTree(int sp, int pid, vec2 leafUv, vec3 hl, vec3 rdl, float yaw, out v
     nrm = vec3(nl.x * c + nl.z * s, nl.y, -nl.x * s + nl.z * c);
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// First-person arms, per pixel. Each arm is a solid between a top height (back of hand) and a
+// bottom height (palm) over a 544 x 176 grid. Every finger has its own knuckle and curls on its
+// own: a sample point is unbent around each finger's knuckle axis and tested against that finger.
+const float ARM_S = 0.00125;      // metres per grid unit
+const float ARM_X0 = 150.0;       // nearest part of the arm drawn (the rest is behind the camera)
+const float ARM_HMAX = 56.0;
+const float ARM_FINGERS_U = 400.0; // nothing finger-like before this along the arm
+
+vec2 armH(vec3 q, float row) {
+    return textureLod(uArmHgt, vec2((q.x + 0.5) / 544.0, (q.z + 88.0 + row) / 352.0), 0.0).rg * ARM_HMAX;
+}
+
+int armId(vec3 q, float row) {      // 0 arm/palm, 1..5 finger (thumb first)
+    ivec2 c = ivec2(int(q.x + 0.5), int(q.z + 88.5 + row));
+    return int(texelFetch(uArmHgt, c, 0).b * 255.0 / 40.0 + 0.5);
+}
+
+bool armSolid(vec3 q, float row) {
+    if (q.x < ARM_X0 || q.x > 543.0 || abs(q.z) > 87.0) return false;
+    vec2 h = armH(q, row);
+    return h.x + h.y > 0.4 && q.y <= h.x && q.y >= -h.y;
+}
+
+// Unbend p around finger f of arm i; returns the rest-pose point, th = bend angle there.
+vec3 fingerRest(vec3 p, int i, int f, out float th) {
+    vec4 F = uFing[i * 5 + f];
+    float k = uFingK[i * 5 + f];
+    vec2 rel = p.xz - F.xy;
+    vec2 perp = vec2(-F.w, F.z);
+    float a = dot(rel, F.zw), c = dot(rel, perp), y = p.y;
+    th = 0.0;
+    if (a > 0.0 && k > 1e-5) {
+        vec2 v = vec2(a, y + 1.0 / k);
+        th = atan(v.x, v.y);
+        a = th / k;
+        y = length(v) - 1.0 / k;
+    }
+    vec2 xz = F.xy + F.zw * a + perp * c;
+    return vec3(xz.x, y, xz.y);
+}
+
+// which part holds point p: -1 nothing, 0 arm and palm, 1..5 a finger; q = rest-pose point
+int armPart(vec3 p, int i, out vec3 q, out float th) {
+    float row = float(i) * 176.0;
+    th = 0.0;
+    q = p;
+    if (armSolid(p, row) && armId(p, row) == 0) return 0;
+    if (p.x < ARM_FINGERS_U) return -1;
+    for (int f = 0; f < 5; f++) {
+        float t2;
+        vec3 r = fingerRest(p, i, f, t2);
+        if (r.x < ARM_FINGERS_U - 20.0 || r.x > 543.0 || abs(r.z) > 87.0) continue;
+        if (armId(r, row) == f + 1 && armSolid(r, row)) { q = r; th = t2; return f + 1; }
+    }
+    return -1;
+}
+
+// returns distance in metres along the camera ray (or -1), the part hit, its rest point and bend
+float traceArm(int i, vec3 dc, out int part, out vec3 hq, out float hth) {
+    mat3 Rt = transpose(uArmRot[i]);
+    vec3 ro = Rt * (-uArmPos[i]) / ARM_S;
+    vec3 rd = Rt * dc / ARM_S;
+    vec3 bmin = vec3(ARM_X0, -130.0, -88.0), bmax = vec3(544.0, 58.0, 88.0);
+    vec3 inv = 1.0 / rd;
+    vec3 ta = (bmin - ro) * inv, tb = (bmax - ro) * inv;
+    vec3 tn = min(ta, tb), tf = max(ta, tb);
+    float t0 = max(max(tn.x, tn.y), max(tn.z, 0.02)), t1 = min(min(tf.x, tf.y), tf.z);
+    part = -1;
+    if (t0 >= t1) return -1.0;
+    float dt = (t1 - t0) / 120.0;
+    float t = t0;
+    vec3 q;
+    float th;
+    for (int s = 0; s < 120; s++) {
+        float tt = t + dt;
+        if (armPart(ro + rd * tt, i, q, th) >= 0) {
+            float a = t, b = tt;
+            for (int j = 0; j < 7; j++) {
+                float m = 0.5 * (a + b);
+                if (armPart(ro + rd * m, i, q, th) >= 0) b = m; else a = m;
+            }
+            part = armPart(ro + rd * b, i, hq, hth);
+            return b;
+        }
+        t = tt;
+    }
+    return -1.0;
+}
+
+void shadeArm(int i, int part, vec3 q, float th, float t, out vec3 alb, out vec3 nc) {
+    float row = float(i) * 176.0;
+    vec2 h = armH(q, row);
+    bool back = q.y >= 0.5 * (h.x - h.y);
+    vec2 uv = vec2((q.x + 0.5) / 544.0, (q.z + 88.0 + row + (back ? 0.0 : 352.0)) / 704.0);
+    // texel footprint of one screen pixel (160 lines) at this distance
+    float lod = log2(max(1.0, t * 2.0 * uTanHalf.y / 160.0 / ARM_S));
+    alb = textureLod(uArmCol, uv, lod).rgb;
+    vec3 n = textureLod(uArmNrm, uv, max(lod - 0.5, 0.0)).rgb * 2.0 - 1.0;
+    if (part > 0) {             // turn the normal with the finger's bend
+        vec4 F = uFing[i * 5 + part - 1];
+        vec2 perp = vec2(-F.w, F.z);
+        float al = dot(n.xz, F.zw), ac = dot(n.xz, perp);
+        float c = cos(th), s = sin(th);
+        float al2 = al * c + n.y * s;
+        n.y = -al * s + n.y * c;
+        n.xz = F.zw * al2 + perp * ac;
+    }
+    nc = normalize(uArmRot[i] * n);
+}
+
 float rockTex(vec3 p) {
     float n = vnoise(vec2(p.x + p.z, p.y) * 2.2) * 0.55 + vnoise(vec2(p.x - p.z, p.y * 3.0) * 5.0) * 0.30
             + hash(floor(vec2(p.x * 7.0 + p.z * 5.0, p.y * 8.0))) * 0.15;
@@ -416,6 +536,7 @@ void main() {
     // ---- view ray
     vec2 ndc = vUv * 2.0 - 1.0;
     vec3 d = normalize(vec3(ndc.x * uTanHalf.x, ndc.y * uTanHalf.y, -1.0));
+    vec3 dCam = d;
     float cp = cos(uPitch), sp = sin(uPitch);
     d = vec3(d.x, d.y * cp - d.z * sp, d.y * sp + d.z * cp);
     float cy = cos(uYaw), sy = sin(uYaw);
@@ -640,6 +761,39 @@ void main() {
             vec3 tc = alb * tl;
             tc = mix(tc, uFogCol, 1.0 - exp(-bestT * uFog));
             col = tc + uFlash * vec3(0.55, 0.60, 0.75) * 0.4;
+        }
+    }
+
+    // ---- first-person arms (in front of everything)
+    if (uArmShow > 0.5) {
+        vec3 aq0, aq1, aq;
+        float ath0, ath1, ath;
+        int ap0, ap1, ap;
+        float at0 = traceArm(0, dCam, ap0, aq0, ath0);
+        float at1 = traceArm(1, dCam, ap1, aq1, ath1);
+        int ai = -1;
+        float at = 1e9;
+        if (at0 > 0.0) { ai = 0; at = at0; ap = ap0; aq = aq0; ath = ath0; }
+        if (at1 > 0.0 && at1 < at) { ai = 1; at = at1; ap = ap1; aq = aq1; ath = ath1; }
+        if (ai >= 0) {
+            vec3 alb, nc;
+            shadeArm(ai, ap, aq, ath, at, alb, nc);
+            // camera -> world, same rotations as the view ray
+            vec3 nw = vec3(nc.x, nc.y * cp - nc.z * sp, nc.y * sp + nc.z * cp);
+            nw = vec3(nw.x * cy - nw.z * sy, nw.y, nw.x * sy + nw.z * cy);
+            float armOpen = texture(uHeight, uCam.xz / 256.0).a;
+            float sr = clamp(0.78 + 1.15 * (dot(nw, uSunDir) - max(uSunDir.y, 0.05)), 0.30, 1.35);
+            vec3 al = uAmbient * mix(1.0, sr, uSunVis) * mix(0.10, 1.0, armOpen);
+            al *= 0.85 + 0.25 * clamp(nw.y * 0.5 + 0.5, 0.0, 1.0);          // sky above, ground below
+            float adark = clamp(1.0 - armOpen * (1.0 - uStars * 0.85), 0.0, 1.0);
+            vec3 lamp = vec3(1.0, 0.70, 0.40) * 1.1 * max(dot(nw, -d), 0.2) * adark;
+            // a small glint on the metal plates and buckles (bright, unsaturated texels)
+            vec3 hv = normalize(uSunDir - d);
+            float lum = dot(alb, vec3(0.3, 0.59, 0.11));
+            float sat = max(alb.r, max(alb.g, alb.b)) - min(alb.r, min(alb.g, alb.b));
+            float metal = clamp(1.0 - 5.0 * sat, 0.0, 1.0) * smoothstep(0.18, 0.40, lum);
+            float spec = pow(max(dot(nw, hv), 0.0), 40.0) * (0.02 + 0.30 * metal) * uSunVis * armOpen;
+            col = alb * (al + lamp) + uSunCol * spec;
         }
     }
 

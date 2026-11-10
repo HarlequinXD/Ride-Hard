@@ -28,6 +28,14 @@ Hollowspire.
   and two colours. Nothing is a mesh: every pixel's ray walks the 16 m tree cells, steps through
   each species' zone grid and tests the capsules and leaf cards inside. Bark has 4 textures.
   Shadows on the ground are cast from the real branches and leaves.
+- **First-person arms, per pixel**: both arms (leather bracers, a steel plate, studded fingerless
+  gloves) are built from three images: colour, a normal map and a height map, each showing the
+  palm side and the back. The outline is inflated into a solid with round fingers and a flat palm.
+  The height map raises the straps, buckles and studs; the normal map lights every pixel. Each
+  finger is found in the outline and has its own knuckle, so the fingers curl one by one: a
+  relaxed hand that breathes and tightens as you walk. The arms bob with your steps and lag a
+  little when you turn. Nothing is a mesh: each pixel's ray steps through the arm's volume.
+  Rebuild the arm data with `tools/build_arms.py colour.png normal.png height.png out/`.
 - **Tree Builder** (button top-left): pick any of the 10 species and edit it with sliders in six
   tabs (Trunk, Branches, Sub-branches, Twigs, Leaves, Bark): height, bend, flare, branch count,
   angle, droop, twig density, leaf shape, size, count and colours, bark type and colour. The tree

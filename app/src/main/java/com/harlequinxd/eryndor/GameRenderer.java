@@ -1,12 +1,15 @@
 package com.harlequinxd.eryndor;
 
 import android.content.res.AssetManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -64,6 +67,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private int[] heightData, groundData, groundBase, cloudData;
     volatile TreeLibrary library;
     private int treePrimTex, treeCellTex, treeIdxTex, leafAtlasTex, uploadedTreeVersion = -1;
+    // first-person arms: colour / normal / height sheets (decoded off the GL thread)
+    private int armColTex, armNrmTex, armHgtTex;
+    private int[][] armData;
+    private int[] armW = new int[3], armH = new int[3];
+    private final ArmRig arms = new ArmRig();
     private volatile int[] reshadowed;                  // ground re-shadowed after a species edit
     private final float[] treeMeta = new float[TreeLibrary.SLOTS * TreeLibrary.META * 4];
 
@@ -115,6 +123,18 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         matData = WorldTextures.materials();
         fernData = WorldTextures.ferns();
         treeData = WorldTextures.trees();
+        Loading.set("Shaping your arms", 0.825f);
+        String[] sheets = {"arms/arm_col.png", "arms/arm_nrm.png", "arms/arm_hgt.png"};
+        int[][] ad = new int[3][];
+        for (int i = 0; i < 3; i++) {
+            Bitmap b = readBitmap(sheets[i]);
+            armW[i] = b.getWidth();
+            armH[i] = b.getHeight();
+            ad[i] = new int[armW[i] * armH[i]];
+            b.getPixels(ad[i], 0, armW[i], 0, 0, armW[i], armH[i]);
+            b.recycle();
+        }
+        armData = ad;
         Loading.set("Gathering the clouds", 0.83f);
         cloudData = WorldTextures.clouds();
         heightData = heights;
@@ -138,6 +158,10 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         treeTex = GLUtil.cells(treeData, WorldTextures.TREE_GRID);
         cloudTex = GLUtil.texture(cloudData, WorldTextures.CLOUD_SIZE, false);
         leafAtlasTex = GLUtil.atlas(LeafAtlas.build(), LeafAtlas.W, LeafAtlas.H);
+        armColTex = GLUtil.atlas(armData[0], armW[0], armH[0]);
+        armNrmTex = GLUtil.atlas(armData[1], armW[1], armH[1]);
+        armHgtTex = GLUtil.atlas(armData[2], armW[2], armH[2]);
+        armData = null;
         uploadTrees();
         Loading.set("Lighting the lanterns", 0.99f);
         eyeY = Float.NaN;
@@ -166,6 +190,19 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         int[] base = groundBase;
         if (lib == null || base == null) return;
         new Thread(() -> reshadowed = TreeShadows.apply(base, WorldTextures.trees(), lib), "reshadow").start();
+    }
+
+    private Bitmap readBitmap(String path) {
+        BitmapFactory.Options o = new BitmapFactory.Options();
+        o.inScaled = false;
+        o.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        try (InputStream in = assets.open(path)) {
+            Bitmap b = BitmapFactory.decodeStream(in, null, o);
+            if (b == null) throw new IllegalStateException("cannot decode " + path);
+            return b;
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("missing asset " + path, e);
+        }
     }
 
     /** The ground takes a few seconds to paint, so colours + detail heights are cached on disk. */
@@ -282,8 +319,10 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             groundTex = GLUtil.texture(rs, WorldTextures.GROUND_SIZE, false);
         }
         int slot = previewSlot;
-        if (slot < 0) updatePlayer(dt);
-        else input.consumeLook(look);
+        if (slot < 0) {
+            updatePlayer(dt);
+            arms.update(dt, look[0] * LOOK_SENS, -look[1] * LOOK_SENS, bobAmt, bobPhase);
+        } else input.consumeLook(look);
         sky.update(dt);
         windX = (windX + sky.windSpeed * 0.92 * dt) % 2000.0;
         windZ = (windZ + sky.windSpeed * 0.38 * dt) % 2000.0;
@@ -345,6 +384,14 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(u(sceneProg, "uPitch"), camPitch);
         GLES20.glUniform4f(u(sceneProg, "uPreview"), pvX, pvY, pvZ, slot >= 0 ? slot : -1f);
         GLES20.glUniform1f(u(sceneProg, "uPreviewYaw"), previewYaw);
+        bindTex(11, armColTex, "uArmCol");
+        bindTex(12, armNrmTex, "uArmNrm");
+        bindTex(13, armHgtTex, "uArmHgt");
+        GLES20.glUniformMatrix3fv(u(sceneProg, "uArmRot"), 2, false, arms.rot, 0);
+        GLES20.glUniform3fv(u(sceneProg, "uArmPos"), 2, arms.pos, 0);
+        GLES20.glUniform4fv(u(sceneProg, "uFing"), 10, ArmFingers.PIVOT_DIR, 0);
+        GLES20.glUniform1fv(u(sceneProg, "uFingK"), 10, arms.fingerK, 0);
+        GLES20.glUniform1f(u(sceneProg, "uArmShow"), slot < 0 ? 1f : 0f);
         GLES20.glUniform3f(u(sceneProg, "uCam"), (float) mod(camX, 256.0), camY, (float) mod(camZ, 256.0));
         GLES20.glUniform2f(u(sceneProg, "uCloudO"), (float) mod(px + windX, 2000.0), (float) mod(pz + windZ, 2000.0));
         GLES20.glUniform3fv(u(sceneProg, "uSunDir"), 1, sky.sunDir, 0);
