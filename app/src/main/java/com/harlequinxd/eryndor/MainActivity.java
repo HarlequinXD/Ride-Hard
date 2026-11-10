@@ -1,4 +1,4 @@
-package com.harlequinxd.ridehard;
+package com.harlequinxd.eryndor;
 
 import android.app.Activity;
 import android.opengl.GLSurfaceView;

@@ -1,4 +1,4 @@
-package com.harlequinxd.ridehard;
+package com.harlequinxd.eryndor;
 
 import android.content.res.AssetManager;
 import android.opengl.GLES20;
@@ -24,9 +24,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private static final int LOW_RES_LINES = 240;
     private static final float FOV_Y = (float) Math.toRadians(68);
     private static final float EYE_HEIGHT = 1.68f;
+    private static final float MAX_SLOPE = 1.1f;       // rise per metre the player can climb
+    private static final float MIN_HEADROOM = 1.95f;
     private static final float WALK_SPEED = 4.2f;      // m/s at full stick
     private static final float LOOK_SENS = 0.0065f;    // radians per dp
-    private static final int GROUND_CACHE_VERSION = 2;
+    private static final int GROUND_CACHE_VERSION = 4;
 
     private final Input input;
     private final SkyState sky;
@@ -34,15 +36,15 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private final File cacheDir;
 
     private int sceneProg, blitProg;
-    private int groundTex, cloudTex;
+    private int groundTex, cloudTex, heightTex;
     private int fbo, fboTex, fboW, fboH, scrW, scrH;
     private FloatBuffer quad;
     private final HashMap<String, Integer> sceneU = new HashMap<>(), blitU = new HashMap<>();
 
     // player
-    private double px = 128.0, pz = 172.0;   // on the main street, facing north into town
+    private double px = 128.0, pz = 160.0;   // village street, facing north toward the plaza and the Hollowspire
     private float yaw = 0f, pitch = -0.04f;
-    private float bobPhase, bobAmt;
+    private float bobPhase, bobAmt, eyeY = Float.NaN;
     private double windX, windZ;
     private float time;
     private long lastNanos;
@@ -67,6 +69,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
 
         groundTex = GLUtil.texture(loadGround(), WorldTextures.GROUND_SIZE, true);
         cloudTex = GLUtil.texture(WorldTextures.clouds(), WorldTextures.CLOUD_SIZE, false);
+        heightTex = GLUtil.texture(WorldTextures.heightTexture(), WorldTextures.HEIGHT_SIZE, false, true);
+        eyeY = Float.NaN;
 
         float[] q = {-1, -1, 1, -1, -1, 1, 1, 1};
         quad = ByteBuffer.allocateDirect(q.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
@@ -81,6 +85,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private int[] loadGround() {
         int n = WorldTextures.GROUND_SIZE * WorldTextures.GROUND_SIZE;
         File f = new File(cacheDir, "ground_v" + GROUND_CACHE_VERSION + ".bin");
+        File[] old = cacheDir.listFiles((dir, name) -> name.startsWith("ground_v") && !name.equals(f.getName()));
+        if (old != null) for (File o : old) o.delete();
         if (f.length() == n * 4L) {
             try (FileInputStream in = new FileInputStream(f)) {
                 byte[] bytes = new byte[n * 4];
@@ -159,13 +165,16 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cloudTex);
         GLES20.glUniform1i(u(sceneProg, "uCloud"), 1);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE2);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, heightTex);
+        GLES20.glUniform1i(u(sceneProg, "uHeight"), 2);
 
         float tanY = (float) Math.tan(FOV_Y / 2);
         GLES20.glUniform2f(u(sceneProg, "uTanHalf"), tanY * fboW / fboH, tanY);
         GLES20.glUniform1f(u(sceneProg, "uYaw"), yaw);
         GLES20.glUniform1f(u(sceneProg, "uPitch"), pitch);
-        GLES20.glUniform2f(u(sceneProg, "uCamG"), (float) mod(px, 256.0), (float) mod(pz, 256.0));
-        GLES20.glUniform1f(u(sceneProg, "uCamH"), EYE_HEIGHT + bobAmt * (float) Math.sin(bobPhase) * 0.045f);
+        GLES20.glUniform3f(u(sceneProg, "uCam"), (float) mod(px, 256.0),
+                eyeY + bobAmt * (float) Math.sin(bobPhase) * 0.045f, (float) mod(pz, 256.0));
         GLES20.glUniform2f(u(sceneProg, "uCloudO"), (float) mod(px + windX, 2000.0), (float) mod(pz + windZ, 2000.0));
         GLES20.glUniform3fv(u(sceneProg, "uSunDir"), 1, sky.sunDir, 0);
         GLES20.glUniform3fv(u(sceneProg, "uSkyTop"), 1, sky.skyTop, 0);
@@ -183,7 +192,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(u(sceneProg, "uFlash"), sky.lightning);
         GLES20.glUniform1f(u(sceneProg, "uTime"), time);
         GLES20.glUniform1f(u(sceneProg, "uSunVis"), sky.sunVis);
-        GLES20.glUniform1f(u(sceneProg, "uDust"), sky.dust);
+        GLES20.glUniform1f(u(sceneProg, "uMist"), sky.mist);
         drawQuad();
 
         // ---- upscale to the screen
@@ -211,16 +220,37 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             // forward = (sin yaw, -cos yaw), right = (cos yaw, sin yaw) — matches the shader
             double vx = (s * my + c * mx) * WALK_SPEED;
             double vz = (-c * my + s * mx) * WALK_SPEED;
-            px += vx * dt;
-            pz += vz * dt;
+            tryMove(vx * dt, 0);
+            tryMove(0, vz * dt);
             bobPhase += dt * (5.5f + 4.5f * mag);
         }
+        float floor = WorldTextures.floorAt(px, pz);
+        float want = floor + EYE_HEIGHT;
+        float ceil = WorldTextures.ceilingAt(px, pz);
+        if (want > ceil - 0.25f) want = ceil - 0.25f;
+        eyeY = Float.isNaN(eyeY) ? want : eyeY + (want - eyeY) * Math.min(1f, dt * 14f);
         float target = mag > 0.02f ? mag : 0f;
         bobAmt += (target - bobAmt) * Math.min(1f, dt * 6f);
         // keep doubles small; the world tiles every 256 m and the clouds every 2000 m
         // 32000 m is a multiple of both tile sizes, so the wrap is invisible
         if (Math.abs(px) > 64000.0) px = mod(px, 32000.0);
         if (Math.abs(pz) > 64000.0) pz = mod(pz, 32000.0);
+    }
+
+    /** Walk unless the ground ahead is too steep (a wall) or the rock overhead is too low. */
+    private void tryMove(double mx, double mz) {
+        double len = Math.sqrt(mx * mx + mz * mz);
+        if (len < 1e-6) return;
+        double nx = px + mx, nz = pz + mz;
+        // probe a little ahead so we stop short of walls instead of clipping into them
+        double ax = px + mx / len * 0.35, az = pz + mz / len * 0.35;
+        float here = WorldTextures.floorAt(px, pz);
+        float ahead = WorldTextures.floorAt(ax, az);
+        if ((ahead - here) / 0.35f > MAX_SLOPE) return;
+        float ceil = WorldTextures.ceilingAt(ax, az);
+        if (ceil - ahead < MIN_HEADROOM) return;
+        px = nx;
+        pz = nz;
     }
 
     private void drawQuad() {

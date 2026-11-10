@@ -1,4 +1,4 @@
-package com.harlequinxd.ridehard;
+package com.harlequinxd.eryndor;
 
 /** Touch state shared between the UI thread (ControlsView) and the GL thread. */
 final class Input {

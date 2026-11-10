@@ -4,7 +4,7 @@
     <uses-feature android:glEsVersion="0x00020000" android:required="true" />
 
     <application
-        android:label="Ride Hard"
+        android:label="Chronicles of Eryndor"
         android:icon="@drawable/ic_launcher"
         android:allowBackup="true"
         android:hardwareAccelerated="true"

@@ -1,4 +1,4 @@
-package com.harlequinxd.ridehard;
+package com.harlequinxd.eryndor;
 
 import java.util.Random;
 
@@ -8,16 +8,16 @@ import java.util.Random;
  */
 final class SkyState {
 
-    static final String[] WEATHER_NAMES = {"Clear", "Cloudy", "Overcast", "Rain", "Thunderstorm", "Dust storm"};
+    static final String[] WEATHER_NAMES = {"Clear", "Cloudy", "Overcast", "Rain", "Thunderstorm", "Mist"};
 
-    //                         cover  dark   fog     rain  grey  dust  wind
+    //                         cover  dark   fog     rain  grey  mist  wind
     private static final float[][] WEATHER = {
             {0.26f, 0.00f, 0.0035f, 0.0f, 0.00f, 0.0f, 6f},   // clear
             {0.48f, 0.10f, 0.0045f, 0.0f, 0.12f, 0.0f, 9f},   // cloudy
             {0.86f, 0.45f, 0.0070f, 0.0f, 0.55f, 0.0f, 11f},  // overcast
             {0.96f, 0.62f, 0.0130f, 0.7f, 0.70f, 0.0f, 14f},  // rain
             {1.00f, 0.82f, 0.0180f, 1.0f, 0.85f, 0.0f, 22f},  // thunderstorm
-            {0.25f, 0.20f, 0.0400f, 0.0f, 0.25f, 1.0f, 26f},  // dust storm
+            {0.70f, 0.30f, 0.0450f, 0.0f, 0.45f, 1.0f, 3f},   // mist
     };
 
     /** Real seconds for a full 24h cycle (x20 when fast time is on). */
@@ -46,7 +46,7 @@ final class SkyState {
     final float[] ambient = new float[3];
     final float[] fogCol = new float[3];
     final float[] mtnCol = new float[3];
-    float fogDensity, stars, cover, cloudDark, rain, sunVis, dust, windSpeed;
+    float fogDensity, stars, cover, cloudDark, rain, sunVis, mist, windSpeed;
     float wetness, lightning;
 
     void requestNextWeather() {
@@ -80,7 +80,7 @@ final class SkyState {
         cloudDark = cur[1];
         rain = cur[3];
         float grey = cur[4];
-        dust = cur[5];
+        mist = cur[5];
         windSpeed = cur[6];
 
         // ground gets wet in rain, dries slowly afterwards
@@ -122,19 +122,19 @@ final class SkyState {
         desat(skyHor, grey, 0.54f * bright + 0.05f);
         for (int i = 0; i < 3; i++) ambient[i] *= 1f - 0.38f * grey;
 
-        // dust storm: everything goes ochre
+        // mist: everything fades to soft grey
         for (int i = 0; i < 3; i++) {
-            float d = DUST[i] * (0.15f + 0.85f * bright);
-            skyHor[i] += (d - skyHor[i]) * dust * 0.9f;
-            skyTop[i] += (d * 0.85f - skyTop[i]) * dust * 0.8f;
-            ambient[i] *= 1f - 0.25f * dust;
+            float d = MIST[i] * (0.15f + 0.85f * bright);
+            skyHor[i] += (d - skyHor[i]) * mist * 0.9f;
+            skyTop[i] += (d * 0.92f - skyTop[i]) * mist * 0.7f;
+            ambient[i] *= 1f - 0.15f * mist;
             ambient[i] += flash * 0.9f;
             fogCol[i] = skyHor[i];
             mtnCol[i] = ROCK[i] * ambient[i];
         }
 
-        sunVis = smooth(-0.06f, 0.04f, e) * (1f - grey * 0.92f) * (1f - dust * 0.75f);
-        stars = (1f - smooth(-0.22f, -0.04f, e)) * (1f - grey) * (1f - dust);
+        sunVis = smooth(-0.06f, 0.04f, e) * (1f - grey * 0.92f) * (1f - mist * 0.75f);
+        stars = (1f - smooth(-0.22f, -0.04f, e)) * (1f - grey) * (1f - mist);
         fogDensity = cur[2];
     }
 
@@ -178,10 +178,10 @@ final class SkyState {
     private static final float[] TWI_AMB = {0.72f, 0.52f, 0.46f};
 
     private static final float[] DAY_TOP = {0.20f, 0.44f, 0.86f};
-    private static final float[] DAY_HOR = {0.86f, 0.84f, 0.78f};
+    private static final float[] DAY_HOR = {0.80f, 0.85f, 0.90f};
     private static final float[] DAY_SUN = {1.00f, 0.95f, 0.82f};
     private static final float[] DAY_AMB = {1.05f, 1.00f, 0.92f};
 
-    private static final float[] DUST = {0.78f, 0.56f, 0.34f};
-    private static final float[] ROCK = {0.66f, 0.38f, 0.25f};
+    private static final float[] MIST = {0.72f, 0.75f, 0.78f};
+    private static final float[] ROCK = {0.44f, 0.47f, 0.55f};
 }

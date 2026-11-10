@@ -1,4 +1,4 @@
-package com.harlequinxd.ridehard;
+package com.harlequinxd.eryndor;
 
 import android.content.Context;
 import android.graphics.Canvas;
@@ -143,13 +143,21 @@ final class ControlsView extends View {
         int w = getWidth(), h = getHeight();
 
         if (!sky.worldReady) {
-            c.drawColor(Color.rgb(24, 16, 10));
+            c.drawColor(Color.rgb(10, 12, 18));
+            drawTitle(c, w, h, 255);
             Paint p = new Paint(hint);
-            p.setColor(Color.argb(220, 255, 230, 190));
-            p.setTextSize(18 * dp);
-            c.drawText("Painting the desert…", w / 2f, h / 2f, p);
+            p.setColor(Color.argb(170, 200, 210, 220));
+            p.setTextSize(13 * dp);
+            c.drawText("Painting the realm…", w / 2f, h * 0.78f, p);
             postInvalidateDelayed(200);
             return;
+        }
+        if (readyAt == 0) readyAt = System.currentTimeMillis();
+        float since = (System.currentTimeMillis() - readyAt) / 1000f;
+        if (since < 6f) {                       // title lingers over the scene, then fades
+            int alpha = (int) (255 * Math.max(0f, Math.min(1f, (6f - since) / 2f)));
+            drawTitle(c, w, h, alpha);
+            postInvalidateDelayed(16);
         }
 
         float r = padRadius();
@@ -174,6 +182,38 @@ final class ControlsView extends View {
         c.drawText(clock, btnTime.left - 12 * dp, btnTime.centerY() + 5 * dp, text);
 
         postInvalidateDelayed(moveId != -1 || lookId != -1 ? 16 : 500);
+    }
+
+    private long readyAt;
+    private Paint titlePaint, subPaint, linePaint;
+
+    private void drawTitle(Canvas c, int w, int h, int alpha) {
+        if (titlePaint == null) {
+            titlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            titlePaint.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD));
+            titlePaint.setTextAlign(Paint.Align.CENTER);
+            titlePaint.setTextSize(34 * dp);
+            titlePaint.setLetterSpacing(0.06f);
+            subPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            subPaint.setTypeface(Typeface.create(Typeface.SERIF, Typeface.ITALIC));
+            subPaint.setTextAlign(Paint.Align.CENTER);
+            subPaint.setTextSize(20 * dp);
+            subPaint.setLetterSpacing(0.35f);
+            linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            linePaint.setStrokeWidth(1.2f * dp);
+        }
+        float cy = h * 0.40f;
+        titlePaint.setShadowLayer(6 * dp, 0, 2 * dp, Color.argb(alpha, 0, 0, 0));
+        titlePaint.setColor(Color.argb(alpha, 236, 205, 130));
+        c.drawText("Chronicles of Eryndor", w / 2f, cy, titlePaint);
+        linePaint.setColor(Color.argb(alpha * 3 / 4, 236, 205, 130));
+        float lw = 110 * dp, ly = cy + 16 * dp;
+        c.drawLine(w / 2f - lw, ly, w / 2f - 14 * dp, ly, linePaint);
+        c.drawLine(w / 2f + 14 * dp, ly, w / 2f + lw, ly, linePaint);
+        c.drawCircle(w / 2f, ly, 3 * dp, linePaint);
+        subPaint.setShadowLayer(5 * dp, 0, 2 * dp, Color.argb(alpha, 0, 0, 0));
+        subPaint.setColor(Color.argb(alpha, 190, 215, 220));
+        c.drawText("HOLLOWSPIRE", w / 2f, cy + 48 * dp, subPaint);
     }
 
     private Paint hintRingPaint;

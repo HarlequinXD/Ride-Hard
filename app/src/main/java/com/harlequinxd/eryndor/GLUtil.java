@@ -1,18 +1,18 @@
-package com.harlequinxd.ridehard;
+package com.harlequinxd.eryndor;
 
 import android.content.res.AssetManager;
-import android.graphics.Bitmap;
 import android.opengl.GLES20;
-import android.opengl.GLUtils;
 import android.util.Log;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 
 final class GLUtil {
-    private static final String TAG = "RideHard";
+    private static final String TAG = "Eryndor";
 
     private GLUtil() {}
 
@@ -60,14 +60,32 @@ final class GLUtil {
         return s;
     }
 
-    /** Square ARGB texture, repeating, with mipmaps. */
+    /**
+     * Square ARGB texture, repeating, with mipmaps. Uploaded as raw RGBA bytes (not via Bitmap) so
+     * alpha is never premultiplied into the colour; the ground uses alpha as its water mask.
+     */
     static int texture(int[] argb, int size, boolean nearestMag) {
-        Bitmap bm = Bitmap.createBitmap(argb, size, size, Bitmap.Config.ARGB_8888);
+        return texture(argb, size, nearestMag, false);
+    }
+
+    static int texture(int[] argb, int size, boolean nearestMag, boolean dataTexture) {
+        ByteBuffer bb = ByteBuffer.allocateDirect(size * size * 4).order(ByteOrder.nativeOrder());
+        for (int c : argb) {
+            bb.put((byte) (c >> 16)).put((byte) (c >> 8)).put((byte) c).put((byte) (c >>> 24));
+        }
+        bb.position(0);
         int[] t = new int[1];
         GLES20.glGenTextures(1, t, 0);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t[0]);
-        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bm, 0);
-        bm.recycle();
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, size, size, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, bb);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_REPEAT);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_REPEAT);
+        if (dataTexture) {          // heightmap: smooth bilinear, no mipmaps (sampled inside loops)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+            return t[0];
+        }
         GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER,
                 nearestMag ? GLES20.GL_NEAREST_MIPMAP_LINEAR : GLES20.GL_LINEAR_MIPMAP_LINEAR);
