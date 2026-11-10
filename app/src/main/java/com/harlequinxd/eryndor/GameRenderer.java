@@ -28,7 +28,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private static final float MIN_HEADROOM = 1.95f;
     private static final float WALK_SPEED = 4.2f;      // m/s at full stick
     private static final float LOOK_SENS = 0.0065f;    // radians per dp
-    private static final int GROUND_CACHE_VERSION = 5;
+    private static final int GROUND_CACHE_VERSION = 6;
 
     private final Input input;
     private final SkyState sky;
@@ -36,7 +36,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private final File cacheDir;
 
     private int sceneProg, blitProg;
-    private int groundTex, cloudTex, heightTex;
+    private int groundTex, cloudTex, heightTex, detailTex;
     private int fbo, fboTex, fboW, fboH, scrW, scrH;
     private FloatBuffer quad;
     private final HashMap<String, Integer> sceneU = new HashMap<>(), blitU = new HashMap<>();
@@ -70,6 +70,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         groundTex = GLUtil.texture(loadGround(), WorldTextures.GROUND_SIZE, true);
         cloudTex = GLUtil.texture(WorldTextures.clouds(), WorldTextures.CLOUD_SIZE, false);
         heightTex = GLUtil.texture(WorldTextures.heightTexture(), WorldTextures.HEIGHT_SIZE, false, true);
+        detailTex = GLUtil.luminance(WorldTextures.detail(), WorldTextures.GROUND_SIZE);
         eyeY = Float.NaN;
 
         float[] q = {-1, -1, 1, -1, -1, 1, 1, 1};
@@ -81,29 +82,35 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         sky.worldReady = true;
     }
 
-    /** The ground takes a couple of seconds to paint, so it is cached on disk after the first run. */
+    /** The ground takes a few seconds to paint, so colours + detail heights are cached on disk. */
     private int[] loadGround() {
         int n = WorldTextures.GROUND_SIZE * WorldTextures.GROUND_SIZE;
         File f = new File(cacheDir, "ground_v" + GROUND_CACHE_VERSION + ".bin");
         File[] old = cacheDir.listFiles((dir, name) -> name.startsWith("ground_v") && !name.equals(f.getName()));
         if (old != null) for (File o : old) o.delete();
-        if (f.length() == n * 4L) {
+        if (f.length() == n * 5L) {
             try (FileInputStream in = new FileInputStream(f)) {
-                byte[] bytes = new byte[n * 4];
+                byte[] bytes = new byte[n * 5];
                 int off = 0, r;
                 while (off < bytes.length && (r = in.read(bytes, off, bytes.length - off)) > 0) off += r;
                 if (off == bytes.length) {
                     int[] px = new int[n];
-                    ByteBuffer.wrap(bytes).asIntBuffer().get(px);
+                    ByteBuffer.wrap(bytes, 0, n * 4).asIntBuffer().get(px);
+                    byte[] det = new byte[n];
+                    System.arraycopy(bytes, n * 4, det, 0, n);
+                    WorldTextures.setCached(px, det);
                     return px;
                 }
             } catch (Exception ignored) {
             }
         }
         int[] px = WorldTextures.ground();
+        byte[] det = WorldTextures.detail();
         try (FileOutputStream out = new FileOutputStream(f)) {
-            ByteBuffer bb = ByteBuffer.allocate(n * 4);
+            ByteBuffer bb = ByteBuffer.allocate(n * 5);
             bb.asIntBuffer().put(px);
+            bb.position(n * 4);
+            bb.put(det);
             out.write(bb.array());
         } catch (Exception ignored) {
         }
@@ -168,6 +175,9 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE2);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, heightTex);
         GLES20.glUniform1i(u(sceneProg, "uHeight"), 2);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE3);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, detailTex);
+        GLES20.glUniform1i(u(sceneProg, "uDetail"), 3);
 
         float tanY = (float) Math.tan(FOV_Y / 2);
         GLES20.glUniform2f(u(sceneProg, "uTanHalf"), tanY * fboW / fboH, tanY);
@@ -224,7 +234,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             tryMove(0, vz * dt);
             bobPhase += dt * (5.5f + 4.5f * mag);
         }
-        float floor = WorldTextures.floorAt(px, pz);
+        float floor = groundAt(px, pz);
         float want = floor + EYE_HEIGHT;
         float ceil = WorldTextures.ceilingAt(px, pz);
         if (want > ceil - 0.25f) want = ceil - 0.25f;
@@ -237,6 +247,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         if (Math.abs(pz) > 64000.0) pz = mod(pz, 32000.0);
     }
 
+    /** Terrain plus fine relief (rocks, shrubs, walls) under a point. */
+    private static float groundAt(double x, double z) {
+        return WorldTextures.floorAt(x, z) + WorldTextures.detailAt(x, z);
+    }
+
     /** Walk unless the ground ahead is too steep (a wall) or the rock overhead is too low. */
     private void tryMove(double mx, double mz) {
         double len = Math.sqrt(mx * mx + mz * mz);
@@ -244,8 +259,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         double nx = px + mx, nz = pz + mz;
         // probe a little ahead so we stop short of walls instead of clipping into them
         double ax = px + mx / len * 0.35, az = pz + mz / len * 0.35;
-        float here = WorldTextures.floorAt(px, pz);
-        float ahead = WorldTextures.floorAt(ax, az);
+        float here = groundAt(px, pz);
+        float ahead = groundAt(ax, az);
         if ((ahead - here) / 0.35f > MAX_SLOPE) return;
         float ceil = WorldTextures.ceilingAt(ax, az);
         if (ceil - ahead < MIN_HEADROOM) return;

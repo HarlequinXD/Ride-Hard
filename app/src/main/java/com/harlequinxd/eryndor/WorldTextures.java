@@ -21,6 +21,46 @@ final class WorldTextures {
     static final int CLOUD_SIZE = 256;
 
     private static int[] groundCache, cloudCache;
+    static final float DETAIL_MAX = 3f;             // metres represented by 8-bit 255
+    private static byte[] detailCache;
+    private static float[] DH;                       // detail heights while painting
+
+    /** Raise the detail height at a texel (keeps the highest). */
+    private static void raise(int i, float v) {
+        if (DH != null && v > DH[i]) DH[i] = v;
+    }
+
+    private static float bl0(PNoise p, float u, float v) {
+        return p.at(u, v);
+    }
+
+    /** Detail heights (8-bit, 0..DETAIL_MAX metres) matching the ground texture texel for texel. */
+    static synchronized byte[] detail() {
+        if (detailCache == null) {
+            groundCache = null;
+            ground();
+        }
+        return detailCache;
+    }
+
+    /** Use previously cached ground + detail data. */
+    static synchronized void setCached(int[] g, byte[] d) {
+        groundCache = g;
+        detailCache = d;
+    }
+
+    /** Bilinear detail height in metres (matches GL_LINEAR on the detail texture). */
+    static float detailAt(double wx, double wz) {
+        byte[] d = detailCache;
+        if (d == null) return 0f;
+        final int S = GROUND_SIZE;
+        double fx = wx / WORLD_SIZE * S - 0.5, fz = wz / WORLD_SIZE * S - 0.5;
+        int x0 = (int) Math.floor(fx), z0 = (int) Math.floor(fz);
+        float tx = (float) (fx - x0), tz = (float) (fz - z0);
+        int ax = Math.floorMod(x0, S), bx = Math.floorMod(x0 + 1, S), az = Math.floorMod(z0, S), bz = Math.floorMod(z0 + 1, S);
+        float a = (d[az * S + ax] & 255), b = (d[az * S + bx] & 255), c = (d[bz * S + ax] & 255), e = (d[bz * S + bx] & 255);
+        return lerp(lerp(a, b, tx), lerp(c, e, tx), tz) / 255f * DETAIL_MAX;
+    }
 
     private WorldTextures() {}
 
@@ -352,6 +392,7 @@ final class WorldTextures {
         if (groundCache != null) return groundCache;
         final int S = GROUND_SIZE;
         final float[] R = new float[S * S], G = new float[S * S], B = new float[S * S], A = new float[S * S];
+        DH = new float[S * S];
         final byte[] busy = new byte[S * S];            // 1 = road / water / plaza: no scatter
         Random rnd = new Random(1349);
         final float caveLen = Cave.pathLength();
@@ -370,6 +411,8 @@ final class WorldTextures {
                 float fine = f1.at(u, v) * 0.6f + f2.at(u, v) * 0.4f;
                 float h = hash(x, y), h2 = hash(x + 911, y - 317);
                 float a = 1f;
+                // detail height (m): grass is a fine fuzz of blades
+                float dh = 0.015f + 0.055f * h * h + 0.03f * bl0(blade, u, v);
 
                 // ---- meadow: lush to sun-dried grass, strong per-texel blade variation
                 float t = smooth(0.30f, 0.75f, big);
@@ -394,6 +437,7 @@ final class WorldTextures {
                     float er = 0.43f * el, eg = 0.35f * el, eb = 0.25f * el;
                     if (h > 0.7f) { er = r; eg = g; eb = b; }             // grass poking through
                     r = lerp(r, er, bare); g = lerp(g, eg, bare); b = lerp(b, eb, bare);
+                    dh = lerp(dh, h > 0.7f ? dh : 0.01f + 0.015f * fine, bare);
                 }
                 // wildflowers in drifts
                 float fl = smooth(0.55f, 0.85f, m2.at(u + 0.7f, v + 0.3f)) * (1f - bare);
@@ -403,6 +447,7 @@ final class WorldTextures {
                     else if (k < 0.65f) { r = 0.95f; g = 0.80f; b = 0.20f; }  // buttercups
                     else if (k < 0.85f) { r = 0.55f; g = 0.40f; b = 0.75f; }  // violets
                     else { r = 0.80f; g = 0.18f; b = 0.14f; }                 // poppies
+                    dh = 0.13f + 0.06f * hash(x, y * 3);
                 }
 
                 // ---- roads
@@ -423,6 +468,7 @@ final class WorldTextures {
                 if (onN || onE || onP) {
                     float wear = smooth(0.6f, 0.0f, Math.min(Math.abs(sd - 1.6f), Math.abs(sd + 0f - 1.6f))) * (onN ? 1f : 0f);
                     float[] c = cobble(wx, wz, 0.36f, fine, h, wear * 0.6f);
+                    dh = vEdge < 0.36f * 0.13f ? 0.0f : 0.02f + 0.035f * smooth(0f, 0.12f, vEdge);
                     boolean curb = (onN && !onP && !(sdz < halfE + 0.35f) && sd > halfN)
                             || (onE && !onP && !(sd < halfN + 0.35f) && sdz > halfE)
                             || (onP && plaza > 15.0f && !(sd < halfN + 0.35f) && !(sdz < halfE + 0.35f));
@@ -430,6 +476,7 @@ final class WorldTextures {
                         int seg = (int) Math.floor((onN ? wz : (onE ? wx : (float) Math.atan2(dz, dx) * 15f)) / 0.9f);
                         float cl = 0.78f + 0.15f * hash(seg, 3) + 0.06f * (h - 0.5f);
                         c = new float[]{0.60f * cl, 0.59f * cl, 0.56f * cl};
+                        dh = 0.16f;
                     }
                     r = c[0]; g = c[1]; b = c[2];
                     paved = true;
@@ -450,6 +497,7 @@ final class WorldTextures {
                         float[] tr = track(acr - wob, along, fine, h, mid);
                         float ta = (1f - smooth(hw - 0.5f, hw + 0.8f, sd)) * trackN * tr[3];
                         r = lerp(r, tr[0], ta); g = lerp(g, tr[1], ta); b = lerp(b, tr[2], ta);
+                        dh = lerp(dh, tr[4], ta);
                         roadA = Math.max(roadA, ta);
                     }
                 }
@@ -465,7 +513,9 @@ final class WorldTextures {
                     float bl2 = 0.74f + 0.22f * hash(fx * 31 + fz, 7) + 0.06f * (h - 0.5f) + 0.08f * (fine - 0.5f);
                     r = 0.58f * bl2; g = 0.55f * bl2; b = 0.50f * bl2;
                     if (fu < 0.10f || fv < 0.12f) { r *= 0.55f; g *= 0.55f; b *= 0.55f; }
+                    dh = (fu < 0.10f || fv < 0.12f) ? 0.0f : 0.025f;
                     if (sd > 3.5f) {                                       // parapet walls
+                        dh = 0.95f + 0.05f * hash(fz, 3);
                         float pl = 0.95f - 0.35f * (dx > 0 ? 1f : 0f) * smooth(3.5f, 4.2f, sd) + 0.1f * (h - 0.5f);
                         r = 0.62f * pl; g = 0.60f * pl; b = 0.55f * pl;
                     }
@@ -478,16 +528,19 @@ final class WorldTextures {
                     float mr = 0.42f * ml, mg = 0.36f * ml, mb = 0.27f * ml;
                     if (hash(x >> 1, y >> 1) < 0.12f) { mr = 0.55f * ml; mg = 0.53f * ml; mb = 0.50f * ml; }  // pebbles
                     r = lerp(r, mr, bank); g = lerp(g, mg, bank); b = lerp(b, mb, bank);
+                    dh = lerp(dh, hash(x >> 1, y >> 1) < 0.12f ? 0.05f : 0.01f, bank);
                     // reeds along the outer bank
                     if (rd > rhw + 0.3f && rd < rhw + 1.3f && m2.at(u * 4f, v * 4f) > 0.55f && h > 0.45f) {
                         float rl = 0.7f + 0.5f * h2;
                         r = 0.30f * rl; g = 0.40f * rl; b = 0.18f * rl;
+                        dh = 0.35f + 0.45f * h2;
                     }
                     if (rd < rhw) {
                         float depth = smooth(0f, 1.6f, rhw - rd);
                         a = 1f - (0.55f + 0.45f * depth);                  // shallows reflect less
                         float wl = 0.85f + 0.2f * fine;
                         r = lerp(0.30f, 0.10f, depth) * wl; g = lerp(0.29f, 0.15f, depth) * wl; b = lerp(0.22f, 0.13f, depth) * wl;
+                        dh = 0f;
                     }
                 }
                 // shadow of the bridge on the water either side
@@ -503,14 +556,17 @@ final class WorldTextures {
                         if (sf < 0.08f) rl *= 0.6f;
                         r = 0.66f * rl; g = 0.63f * rl; b = 0.58f * rl;
                         a = 1f;
+                        dh = 0.55f;
                     } else if (plaza < 0.55f) {                            // central column
                         float rl = 0.75f - 0.4f * (dx + dz) / 0.55f;
                         r = 0.62f * rl; g = 0.60f * rl; b = 0.56f * rl;
                         a = 1f;
+                        dh = 1.6f;
                     } else {
                         float ripple = 0.5f + 0.5f * (float) Math.sin(plaza * 9f);
                         r = 0.12f + 0.03f * ripple; g = 0.17f + 0.03f * ripple; b = 0.17f + 0.03f * ripple;
                         a = 0.15f;
+                        dh = 0.25f;                                        // water surface inside the basin
                     }
                 }
 
@@ -526,12 +582,14 @@ final class WorldTextures {
                         float cr = 0.33f * cl, cg = 0.30f * cl, cb = 0.26f * cl;
                         if (hash(x >> 1, y >> 1) < 0.10f) { cr = 0.47f * cl; cg = 0.45f * cl; cb = 0.42f * cl; }
                         r = lerp(r, cr, k); g = lerp(g, cg, k); b = lerp(b, cb, k);
+                        dh = lerp(dh, hash(x >> 1, y >> 1) < 0.10f ? 0.06f : 0.01f, k);
                         if (k > 0.3f) busy[i] = 1;
                     }
                 }
 
                 if (paved || roadA > 0.5f || a < 1f) busy[i] = 1;
                 R[i] = r; G[i] = g; B[i] = b; A[i] = a;
+                DH[i] = dh;
             }
         }
 
@@ -566,6 +624,10 @@ final class WorldTextures {
                 out[i] = pack(R[i], G[i], B[i], x, y) & 0x00FFFFFF | (Math.round(clamp(A[i]) * 255f) << 24);
             }
         groundCache = out;
+        byte[] det = new byte[S * S];
+        for (int i = 0; i < S * S; i++) det[i] = (byte) Math.round(clamp(DH[i] / DETAIL_MAX) * 255f);
+        detailCache = det;
+        DH = null;
         return out;
     }
 
@@ -574,11 +636,11 @@ final class WorldTextures {
         float l = 0.86f + 0.16f * (fine - 0.5f) + 0.08f * (h - 0.5f);
         float r = 0.46f * l, g = 0.38f * l, b = 0.27f * l;
         float rut = Math.min(Math.abs(across - 0.78f), Math.abs(across + 0.78f));
-        float cov;
-        if (rut < 0.28f) { float d = 0.88f + 0.12f * (rut / 0.28f); r *= d; g *= d; b *= d; cov = 1f; }
+        float cov, th = 0.03f + 0.02f * h;
+        if (rut < 0.28f) { float d = 0.88f + 0.12f * (rut / 0.28f); r *= d; g *= d; b *= d; cov = 1f; th = 0.0f; }
         else if (Math.abs(across) < 0.5f) cov = h > 0.35f ? 0.15f : 0.8f;     // grass crown
         else cov = smooth(1.6f, 0.9f, Math.abs(across)) * (h > 0.3f ? 1f : 0.4f);
-        return new float[]{r, g, b, cov};
+        return new float[]{r, g, b, cov, th};
     }
 
     private static void tuft(float[] R, float[] G, float[] B, int cx, int cy, Random rnd) {
@@ -589,6 +651,7 @@ final class WorldTextures {
             for (int dx = 0; dx <= 1; dx++) {
                 int i = Math.floorMod(cy + dy, S) * S + Math.floorMod(cx + dx, S);
                 R[i] *= 0.62f; G[i] *= 0.62f; B[i] *= 0.62f;
+                raise(i, 0.10f);
             }
         for (int k = 0; k < blades; k++) {
             double ang = rnd.nextDouble() * Math.PI * 2;
@@ -599,6 +662,7 @@ final class WorldTextures {
                 int y = Math.floorMod(cy + (int) Math.round(Math.sin(ang) * s), S);
                 int i = y * S + x;
                 R[i] = lerp(R[i], 0.48f * bl, 0.7f); G[i] = lerp(G[i], 0.56f * bl, 0.7f); B[i] = lerp(B[i], 0.26f * bl, 0.7f);
+                raise(i, (0.14f + 0.22f * bl) * (1f - 0.25f * (s - 1)));
             }
         }
     }
@@ -644,10 +708,14 @@ final class WorldTextures {
                 if (density > 0.52f) {
                     float light = 0.80f + 0.45f * (-(dx + dy) / (er * 1.6f)) + 0.28f * (hh - 0.5f) + 0.15f * (1f - d / er);
                     R[i] = cr * light; G[i] = cg * light; B[i] = cb * light;
+                    float prof = (float) Math.sqrt(Math.max(0f, 1f - (d / er) * (d / er)));
+                    raise(i, (0.35f + rad / PPM * 0.55f) * prof * (0.80f + 0.25f * hh));
                     if (blossom && hash(x, y * 7 + seed) > 0.86f) { R[i] = 0.92f * light; G[i] = 0.78f * light; B[i] = 0.18f * light; }
                 } else {
                     float s = 0.40f + 0.2f * hh;
                     R[i] *= s; G[i] *= s; B[i] *= s;
+                    float prof = (float) Math.sqrt(Math.max(0f, 1f - (d / er) * (d / er)));
+                    raise(i, (0.35f + rad / PPM * 0.55f) * prof * 0.55f);
                 }
             }
     }
@@ -689,6 +757,7 @@ final class WorldTextures {
                 r = lerp(r, 0.30f * light, moss); g = lerp(g, 0.40f * light, moss); b = lerp(b, 0.16f * light, moss);
                 if (hash(x * 5, y + seed) > 0.95f) { r = 0.75f; g = 0.74f; b = 0.55f; }   // lichen flecks
                 R[i] = r; G[i] = g; B[i] = b;
+                raise(i, rad / PPM * 0.75f * (float) Math.pow(dome, 0.7) * (0.88f + 0.12f * facet));
             }
     }
 
@@ -711,14 +780,15 @@ final class WorldTextures {
             double ang = TAU * k / count + rnd.nextFloat() * 0.12f;
             float sx = wx + (float) Math.cos(ang) * radius, sz = wz + (float) Math.sin(ang) * radius;
             float len = 0.55f + rnd.nextFloat() * 0.25f, wid = 0.32f + rnd.nextFloat() * 0.12f;
-            menhir(R, G, B, sx, sz, len, wid, (float) ang + (float) Math.PI / 2, 2.6f + rnd.nextFloat() * 1.4f, fn, rnd.nextInt(9999));
+            menhir(R, G, B, sx, sz, len, wid, (float) ang + (float) Math.PI / 2, 2.6f + rnd.nextFloat() * 1.4f, fn, rnd.nextInt(9999),
+                    2.1f + rnd.nextFloat() * 0.8f);
         }
-        menhir(R, G, B, wx, wz, 1.2f, 0.7f, 0.3f, 0.6f, fn, 4242);
+        menhir(R, G, B, wx, wz, 1.2f, 0.7f, 0.3f, 0.6f, fn, 4242, 0.55f);
     }
 
     /** A standing stone seen from above: rotated rounded slab, lit top, long shadow to the south-east. */
     private static void menhir(float[] R, float[] G, float[] B, float wx, float wz, float halfLen, float halfWid, float rot,
-                               float shadowLen, PNoise fn, int seed) {
+                               float shadowLen, PNoise fn, int seed, float height) {
         final int S = GROUND_SIZE;
         float c = (float) Math.cos(rot), s = (float) Math.sin(rot);
         int ext = (int) ((halfLen + shadowLen + 1) * PPM);
@@ -749,6 +819,7 @@ final class WorldTextures {
                         float moss = smooth(0.6f, 0.8f, n);
                         r = lerp(r, 0.32f * light, moss); g = lerp(g, 0.42f * light, moss); b = lerp(b, 0.20f * light, moss);
                         R[i] = r; G[i] = g; B[i] = b;
+                        raise(i, height * (1f - 0.35f * e * e));
                     }
                 }
     }
@@ -766,6 +837,7 @@ final class WorldTextures {
             int i = y * S + x;
             boolean red = rnd.nextFloat() < 0.25f;
             R[i] = red ? 0.78f : 0.90f; G[i] = red ? 0.25f : 0.86f; B[i] = red ? 0.18f : 0.76f;
+            raise(i, 0.07f + 0.04f * rnd.nextFloat());
         }
         // darker, lusher grass band of the ring
         int ext = (int) ((radius + 1) * PPM), cx = (int) (wx * PPM), cy = (int) (wz * PPM);
@@ -792,6 +864,7 @@ final class WorldTextures {
                 if (d < ri) {
                     float w = 0.06f + 0.10f * smooth(ri * 0.2f, ri, d + dx * 0.5f);
                     R[i] = w; G[i] = w * 1.05f; B[i] = w * 1.15f;
+                    if (DH != null) DH[i] = 0f;
                 } else if (d < ro) {
                     float ang = (float) Math.atan2(dy, dx);
                     boolean outer = d > (ri + ro) / 2;
@@ -801,6 +874,7 @@ final class WorldTextures {
                     float t = 0.72f + 0.3f * hash(stone, 5) - 0.22f * (dx + dy) / ro + 0.15f * (fn.at((x + 0.5f) / S, (y + 0.5f) / S) - 0.5f);
                     if (sf < 0.12f || Math.abs(d - (ri + ro) / 2) < 0.5f) t *= 0.55f;
                     R[i] = 0.60f * t; G[i] = 0.58f * t; B[i] = 0.53f * t;
+                    raise(i, 0.75f);
                 }
             }
     }

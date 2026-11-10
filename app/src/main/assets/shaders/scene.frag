@@ -15,6 +15,7 @@ varying vec2 vUv;
 uniform sampler2D uGround;   // rgb = ground colour, a = 1 land / 0 open water
 uniform sampler2D uCloud;
 uniform sampler2D uHeight;   // r = floor, g = cave ceiling, b = rock top, a = sky openness
+uniform sampler2D uDetail;   // fine relief on the floor: grass, pebbles, shrubs, rocks, walls (0..3 m)
 
 uniform vec2 uTanHalf;
 uniform float uYaw;
@@ -43,6 +44,10 @@ uniform float uMist;
 const float CLOUD_H = 420.0;
 const float HMAX = 48.0;
 const float FAR = 700.0;
+const float DMAX = 3.0;
+const float DFAR = 70.0;      // detail relief fades out by here
+
+float detailFade(float t) { return smoothstep(DFAR, DFAR * 0.4, t); }
 
 float hash(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -166,8 +171,10 @@ void main() {
     for (int i = 0; i < 230; i++) {
         vec3 p = ro + d * t;
         vec4 hm = texture2D(uHeight, p.xz / 256.0) * HMAX;
-        if (p.y < hm.r || (p.y > hm.g && p.y < hm.b)) { hitT = t; break; }
-        if (d.y > 0.0 && p.y > HMAX) break;
+        float det = 0.0;
+        if (t < DFAR) det = texture2D(uDetail, p.xz / 256.0).r * DMAX * detailFade(t);
+        if (p.y < hm.r + det || (p.y > hm.g && p.y < hm.b)) { hitT = t; break; }
+        if (d.y > 0.0 && p.y > HMAX + DMAX) break;
         if (t > FAR) break;
         prevT = t;
         t += 0.035 + t * 0.026;
@@ -179,12 +186,14 @@ void main() {
             float m = 0.5 * (a + b);
             vec3 p = ro + d * m;
             vec4 hm = texture2D(uHeight, p.xz / 256.0) * HMAX;
-            if (p.y < hm.r || (p.y > hm.g && p.y < hm.b)) b = m; else a = m;
+            float det = texture2D(uDetail, p.xz / 256.0).r * DMAX * detailFade(m);
+            if (p.y < hm.r + det || (p.y > hm.g && p.y < hm.b)) b = m; else a = m;
         }
         hitT = b;
         vec3 pb = ro + d * b;                 // blocked by the underside of the rock over a cave?
         vec4 hb = texture2D(uHeight, pb.xz / 256.0) * HMAX;
-        if (pb.y >= hb.r && pb.y > hb.g && pb.y < hb.b && (pb.y - hb.g) < (hb.b - pb.y)) kind = 1.0;
+        float detb = texture2D(uDetail, pb.xz / 256.0).r * DMAX * detailFade(b);
+        if (pb.y >= hb.r + detb && pb.y > hb.g && pb.y < hb.b && (pb.y - hb.g) < (hb.b - pb.y)) kind = 1.0;
     }
     float hit = step(0.0, hitT);
     float T = hit > 0.5 ? hitT : FAR;
@@ -201,12 +210,19 @@ void main() {
     vec4 h3 = texture2D(uHeight, (wp + ez) / 256.0), h4 = texture2D(uHeight, (wp - ez) / 256.0);
     float gx = mix(h1.r - h2.r, h1.b - h2.b, useTop) * HMAX;
     float gz = mix(h3.r - h4.r, h3.b - h4.b, useTop) * HMAX;
-    vec3 n = normalize(vec3(-gx, 2.0 * e, -gz));
+    vec3 nMacro = normalize(vec3(-gx, 2.0 * e, -gz));
+    // fine relief normal (0.125 m texels), faded with distance and ignored on the rock-top layer
+    float e2 = 0.125;
+    vec2 dx2 = vec2(e2, 0.0), dz2 = vec2(0.0, e2);
+    float dfx = (texture2D(uDetail, (wp + dx2) / 256.0).r - texture2D(uDetail, (wp - dx2) / 256.0).r) * DMAX;
+    float dfz = (texture2D(uDetail, (wp + dz2) / 256.0).r - texture2D(uDetail, (wp - dz2) / 256.0).r) * DMAX;
+    float dk = detailFade(T) * (1.0 - useTop);
+    vec3 n = normalize(vec3(-gx / (2.0 * e) - dfx / (2.0 * e2) * dk, 1.0, -gz / (2.0 * e) - dfz / (2.0 * e2) * dk));
     if (kind > 0.5) {                          // underside of the vault: normal from the ceiling layer
         float cx = (h1.g - h2.g) * HMAX, cz = (h3.g - h4.g) * HMAX;
         n = normalize(vec3(cx, -2.0 * e, cz));
     }
-    float steep = smoothstep(0.75, 0.45, n.y);
+    float steep = smoothstep(0.75, 0.45, nMacro.y);          // rock only on big slopes, not on shrubs
     if (kind > 0.5) steep = 1.0;
 
     // sky openness: test a point nudged off the surface; if it sits under rock, use that cell's value

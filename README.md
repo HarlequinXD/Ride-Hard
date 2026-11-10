@@ -8,6 +8,11 @@ Hollowspire.
   overhangs and **caves**. Ground colour comes from a painted photographic-style texture
   (2048 px over 256 m, nearest texels, pixel perfect); steep faces and cave rock use procedural
   stone; hills are shaded by the sun.
+- **Fine relief**: a second 2048 x 2048 detail heightmap, texel for texel with the ground colours,
+  lifts shrubs, boulders, pebbles, grass tufts, flowers, cobbles, curbs, bridge parapets, the
+  fountain, the well and the standing stones. It is ray-marched per screen pixel with smooth
+  (bilinear) heights, so detail is pixel-perfect columns of colour rather than cubes, and fades out
+  past about 70 m. Big stones, rocks and shrubs block movement; grass and pebbles don't.
 - **The world**: a cobbled village with a plaza fountain and a well, a cart track running north to
   a stone bridge over a winding river, meadows with wildflowers, shrubs and mossy boulders, a
   ring of standing stones on a mound, fairy rings, and Hollow Hill to the east with a tunnel
