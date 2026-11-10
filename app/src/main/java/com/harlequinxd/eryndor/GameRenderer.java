@@ -171,6 +171,15 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         sky.worldReady = true;
     }
 
+    /** Draw or sheathe the sword in the right hand. */
+    void toggleSword() {
+        arms.sword = !arms.sword;
+    }
+
+    boolean swordDrawn() {
+        return arms.sword;
+    }
+
     /** (Re)upload the packed species data whenever the library changes. */
     private void uploadTrees() {
         TreeLibrary lib = library;
@@ -389,7 +398,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         bindTex(13, armHgtTex, "uArmHgt");
         GLES20.glUniformMatrix3fv(u(sceneProg, "uArmRot"), 2, false, arms.rot, 0);
         GLES20.glUniform3fv(u(sceneProg, "uArmPos"), 2, arms.pos, 0);
-        GLES20.glUniform4fv(u(sceneProg, "uFing"), 10, ArmFingers.PIVOT_DIR, 0);
+        GLES20.glUniform4fv(u(sceneProg, "uFing"), 10, arms.fingers, 0);
+        GLES20.glUniform3f(u(sceneProg, "uSwordO"), arms.swordO[0], arms.swordO[1], arms.swordO[2]);
+        GLES20.glUniform3f(u(sceneProg, "uSwordB"), arms.swordB[0], arms.swordB[1], arms.swordB[2]);
+        GLES20.glUniform3f(u(sceneProg, "uSwordE"), arms.swordE[0], arms.swordE[1], arms.swordE[2]);
+        GLES20.glUniform1f(u(sceneProg, "uSwordShow"), arms.sword ? 1f : 0f);
         GLES20.glUniform1fv(u(sceneProg, "uFingK"), 10, arms.fingerK, 0);
         GLES20.glUniform1f(u(sceneProg, "uArmShow"), slot < 0 ? 1f : 0f);
         GLES20.glUniform3f(u(sceneProg, "uCam"), (float) mod(camX, 256.0), camY, (float) mod(camZ, 256.0));

@@ -34,6 +34,10 @@ uniform vec3 uArmPos[2];      // arm-local origin (the shoulder end) in camera s
 uniform vec4 uFing[10];       // per finger (right arm then left, thumb first): knuckle u, z, direction u, z
 uniform float uFingK[10];     // per finger curl: curvature (radians per grid unit)
 uniform float uArmShow;
+uniform vec3 uSwordO;         // sword in right-arm grid space: grip centre,
+uniform vec3 uSwordB;         //   blade direction (out of the thumb side),
+uniform vec3 uSwordE;         //   edge direction
+uniform float uSwordShow;
 
 uniform vec2 uTanHalf;
 uniform float uYaw;
@@ -526,6 +530,82 @@ void shadeArm(int i, int part, vec3 q, float th, float t, out vec3 alb, out vec3
     nc = normalize(uArmRot[i] * n);
 }
 
+// ---------------------------------------------------------------------------------------------
+// The sword in the right hand, per pixel: distance-field shapes in sword space
+// (x across the edge, y across the flat, z along the blade), all in arm-grid units (1.25 mm).
+const float SW_GRIP_R = 13.5;     // grip radius
+const float SW_GRIP_H = 62.0;     // half the grip length
+const float SW_GUARD_S = 71.0;    // crossguard centre
+const float SW_BLADE_S0 = 78.0;   // blade starts
+const float SW_BLADE_L = 600.0;   // blade length (75 cm)
+const float SW_POMMEL_S = -82.0;
+
+float ndot2(vec2 a, vec2 b) { return a.x * b.x - a.y * b.y; }
+
+float sdRhombus(vec2 p, vec2 b) {
+    p = abs(p);
+    float h = clamp(ndot2(b - 2.0 * p, b) / dot(b, b), -1.0, 1.0);
+    float d = length(p - 0.5 * b * vec2(1.0 - h, 1.0 + h));
+    return d * sign(p.x * b.y + p.y * b.x - b.x * b.y);
+}
+
+void bladeSize(float s, out float w, out float th) {
+    float u = clamp(s / SW_BLADE_L, 0.0, 1.0);
+    float tip = clamp((1.0 - u) / 0.15, 0.0, 1.0);
+    w = (23.0 - 6.0 * u) * sqrt(tip);
+    th = 4.8 * (1.0 - 0.35 * u) * mix(0.55, 1.0, tip);
+}
+
+// x = distance, y = material (0 steel blade, 1 iron guard and pommel, 2 leather grip)
+vec2 swordSdf(vec3 q) {
+    float grip = max(length(q.xy) - SW_GRIP_R - 0.8 * sin(q.z * 0.45), abs(q.z) - SW_GRIP_H);
+    vec3 g = q - vec3(0.0, 0.0, SW_GUARD_S);
+    g.z -= 0.00045 * g.x * g.x;                                  // tips sweep toward the blade
+    vec3 dq = abs(g) - vec3(86.0 - 0.06 * abs(g.z), 9.0, 6.5);
+    float guard = length(max(dq, 0.0)) + min(max(dq.x, max(dq.y, dq.z)), 0.0) - 3.0;
+    guard = min(guard, length(g * vec3(1.0, 1.0, 1.4)) - 16.0);   // a boss at the centre
+    vec3 pp = q - vec3(0.0, 0.0, SW_POMMEL_S);
+    float pommel = (length(pp * vec3(1.0, 1.0, 1.35)) - 21.0) / 1.35;
+    float s = q.z - SW_BLADE_S0, w, th;
+    bladeSize(s, w, th);
+    float blade = sdRhombus(q.xy, vec2(max(w, 0.2), max(th, 0.2))) * 0.85;
+    blade = max(blade, max(-s, s - SW_BLADE_L));
+    vec2 r = vec2(grip, 2.0);
+    if (guard < r.x) r = vec2(guard, 1.0);
+    if (pommel < r.x) r = vec2(pommel, 1.0);
+    if (blade < r.x) r = vec2(blade, 0.0);
+    return r;
+}
+
+// ray in right-arm grid space (t in metres, as traceArm); returns t or -1, hit in sword space
+float traceSword(vec3 ro, vec3 rd, out vec3 hq, out float mat) {
+    vec3 F = cross(uSwordB, uSwordE);
+    mat3 W = mat3(uSwordE.x, F.x, uSwordB.x, uSwordE.y, F.y, uSwordB.y, uSwordE.z, F.z, uSwordB.z);
+    vec3 o = W * (ro - uSwordO), v = W * rd;
+    vec3 bmin = vec3(-95.0, -30.0, -110.0), bmax = vec3(95.0, 30.0, SW_BLADE_S0 + SW_BLADE_L + 4.0);
+    vec3 inv = 1.0 / v;
+    vec3 ta = (bmin - o) * inv, tb = (bmax - o) * inv;
+    vec3 tn = min(ta, tb), tf = max(ta, tb);
+    float t = max(max(tn.x, tn.y), max(tn.z, 0.02)), t1 = min(min(tf.x, tf.y), tf.z);
+    if (t >= t1) return -1.0;
+    float vl = length(v);
+    for (int i = 0; i < 80; i++) {
+        vec3 q = o + v * t;
+        vec2 d = swordSdf(q);
+        if (d.x < 0.25) { hq = q; mat = d.y; return t; }
+        t += max(d.x, 0.2) / vl;
+        if (t > t1) break;
+    }
+    return -1.0;
+}
+
+vec3 swordNormal(vec3 q) {
+    const vec2 k = vec2(1.0, -1.0);
+    const float e = 0.35;
+    return normalize(k.xyy * swordSdf(q + k.xyy * e).x + k.yyx * swordSdf(q + k.yyx * e).x
+                   + k.yxy * swordSdf(q + k.yxy * e).x + k.xxx * swordSdf(q + k.xxx * e).x);
+}
+
 float rockTex(vec3 p) {
     float n = vnoise(vec2(p.x + p.z, p.y) * 2.2) * 0.55 + vnoise(vec2(p.x - p.z, p.y * 3.0) * 5.0) * 0.30
             + hash(floor(vec2(p.x * 7.0 + p.z * 5.0, p.y * 8.0))) * 0.15;
@@ -779,6 +859,55 @@ void main() {
         float at = 1e9;
         if (at0 > 0.0) { ai = 0; at = at0; ap = ap0; aq = aq0; ath = ath0; }
         if (at1 > 0.0 && at1 < at) { ai = 1; at = at1; ap = ap1; aq = aq1; ath = ath1; }
+        // the sword, in the right arm's space
+        vec3 sq;
+        float smat = 0.0, st = -1.0;
+        if (uSwordShow > 0.5) {
+            mat3 Rt0 = transpose(uArmRot[0]);
+            st = traceSword(Rt0 * (-uArmPos[0]) / ARM_S, Rt0 * dCam / ARM_S, sq, smat);
+        }
+        float swordOpen = texture(uHeight, uCam.xz / 256.0).a;
+        if (st > 0.0 && st < at) {
+            ai = -1;
+            vec3 F = cross(uSwordB, uSwordE);
+            vec3 ns = swordNormal(sq);
+            vec3 nc = normalize(uArmRot[0] * (uSwordE * ns.x + F * ns.y + uSwordB * ns.z));
+            vec3 nw = vec3(nc.x, nc.y * cp - nc.z * sp, nc.y * sp + nc.z * cp);
+            nw = vec3(nw.x * cy - nw.z * sy, nw.y, nw.x * sy + nw.z * cy);
+            float sdark = clamp(1.0 - swordOpen * (1.0 - uStars * 0.85), 0.0, 1.0);
+            vec3 amb = uAmbient * mix(0.12, 1.0, swordOpen);
+            float ndl = max(dot(nw, uSunDir), 0.0) * uSunVis * swordOpen;
+            vec3 lamp = vec3(1.0, 0.70, 0.40) * 1.1 * max(dot(nw, -d), 0.2) * sdark;
+            vec3 hv = normalize(uSunDir - d);
+            float nh = max(dot(nw, hv), 0.0);
+            // point-sampled wear: scratches and pits on 2.5 mm texels
+            vec2 tq = floor(vec2(sq.x * 0.5 + sq.y, sq.z * 0.5));
+            float wear = hash(tq) * 0.5 + hash(floor(tq / 6.0)) * 0.5;
+            vec3 sc;
+            if (smat < 0.5) {                       // steel: mirror of the sky, fuller, bright bevels
+                float w, th;
+                bladeSize(sq.z - SW_BLADE_S0, w, th);
+                float across = abs(sq.x) / max(w, 0.5);
+                float fuller = step(across, 0.20) * step(sq.z - SW_BLADE_S0, SW_BLADE_L * 0.72);
+                vec3 env = skyColor(reflect(d, nw)) * mix(0.10, 1.0, swordOpen);
+                vec3 steel = vec3(0.60, 0.62, 0.66) * (0.86 + 0.18 * wear);
+                sc = steel * (env * 0.75 + amb * 0.35 + uSunCol * ndl * 0.25 + lamp * 0.6);
+                sc *= mix(1.0, 0.55, fuller);
+                sc += mix(0.0, 0.10, smoothstep(0.80, 0.98, across)) * (amb + lamp);   // honed edge
+                sc += uSunCol * pow(nh, 70.0) * 1.6 * uSunVis * swordOpen + lamp * pow(max(dot(nw, -d), 0.0), 30.0) * 0.6;
+            } else if (smat < 1.5) {                // blackened iron with a brass rim
+                float brass = step(abs(abs(sq.x) - 60.0), 4.0);                 // brass bands near the tips
+                vec3 iron = mix(vec3(0.20, 0.19, 0.18), vec3(0.55, 0.42, 0.20), brass) * (0.8 + 0.4 * wear);
+                vec3 env = skyColor(reflect(d, nw)) * mix(0.10, 1.0, swordOpen);
+                sc = iron * (amb + uSunCol * ndl * 0.6 + lamp) + env * 0.12 + uSunCol * pow(nh, 40.0) * 0.5 * uSunVis * swordOpen;
+            } else {                                // leather wrap, spiralling
+                float ang = atan(sq.y, sq.x) / 6.2832;
+                float band = fract(floor(sq.z * 0.5) / 9.0 + ang);
+                vec3 lea = vec3(0.30, 0.17, 0.09) * (0.75 + 0.35 * wear) * mix(0.55, 1.0, step(0.16, band));
+                sc = lea * (amb + uSunCol * ndl * 0.7 + lamp) + uSunCol * pow(nh, 18.0) * 0.06 * uSunVis * swordOpen;
+            }
+            col = sc;
+        }
         if (ai >= 0) {
             vec3 alb, nc;
             shadeArm(ai, ap, aq, ath, at, alb, nc);

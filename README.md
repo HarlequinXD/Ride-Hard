@@ -36,6 +36,11 @@ Hollowspire.
   relaxed hand that breathes and tightens as you walk. The arms bob with your steps and lag a
   little when you turn. Nothing is a mesh: each pixel's ray steps through the arm's volume.
   Rebuild the arm data with `tools/build_arms.py colour.png normal.png height.png out/`.
+- **Sword, per pixel**: a longsword in the right hand: a diamond-section steel blade with a
+  fuller and honed edges that mirror the sky, a blackened-iron crossguard with brass bands, a
+  spiral leather grip and a pommel. Each pixel traces its distance-field shapes. The right hand's
+  fingers bend around one grip line fitted through the knuckles, so they close on the handle;
+  the grip is round, so the blade is turned to show its flat. On PC, B / F sheathes and draws it.
 - **Tree Builder** (button top-left): pick any of the 10 species and edit it with sliders in six
   tabs (Trunk, Branches, Sub-branches, Twigs, Leaves, Bark): height, bend, flare, branch count,
   angle, droop, twig density, leaf shape, size, count and colours, bark type and colour. The tree
@@ -78,6 +83,7 @@ last ten years).
 | Look | Right stick | Mouse (click the window; Esc frees the mouse) |
 | Change the weather | Y | Q |
 | Speed up time | X | T |
+| Draw / sheathe the sword | B | F |
 | Invert look | Click right stick | I |
 | Show / hide help | View or Menu | F1 |
 | Full screen | | F11 or Alt+Enter |

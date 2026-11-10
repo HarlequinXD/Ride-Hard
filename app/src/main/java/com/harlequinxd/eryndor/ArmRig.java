@@ -13,6 +13,17 @@ final class ArmRig {
     final float[] pos = new float[6];
     /** Per-finger curl as curvature (radians per grid unit), right arm then left, thumb first. */
     final float[] fingerK = new float[10];
+    /** Per-finger knuckle pivot (u, z) and bend direction (u, z) as drawn: the right hand's fingers
+     *  bend around one shared grip line so they close on the sword's handle. */
+    final float[] fingers = ArmFingers.PIVOT_DIR.clone();
+    private final float[] gripFingers = ArmFingers.PIVOT_DIR.clone();
+    /** Sword in the right arm's grid space: grip centre, blade direction, edge direction. */
+    final float[] swordO = new float[3], swordB = new float[3], swordE = new float[3];
+    volatile boolean sword = true;
+
+    /** Radius (grid units) the fingers wrap at: grip radius plus half a finger's thickness. */
+    static final float GRIP_WRAP = 24f;
+    static final float THUMB_CURL = 1.05f;
     /** Relaxed curl of each finger in radians (thumb, index, middle, ring, little). */
     static final float[] RELAXED = {0.30f, 0.50f, 0.62f, 0.74f, 0.86f};
 
@@ -21,8 +32,58 @@ final class ArmRig {
     // pose: forearms rising from the bottom corners, backs of the hands toward you
     static float WRIST_X = 0.18f, WRIST_Y = -0.22f, WRIST_Z = -0.32f;
     static float AIM_IN = 0.35f, AIM_UP = 0.60f, ROLL = 0.25f;
+    // sword arm: forearm level and pointing ahead, wrist rolled thumb-up so the blade stands up
+    static float SW_X = 0.20f, SW_Y = -0.25f, SW_Z = -0.38f, SW_IN = 0.40f, SW_UP = -0.25f, SW_ROLL = 1.20f;
+    /** The grip is round, so the sword can turn in the fist: this shows the blade's flat, not its edge. */
+    static float SW_TWIST = 1.0f;
 
     private float swayX, swayY, time;
+
+    ArmRig() {
+        fitGrip();
+    }
+
+    /**
+     * Fit a line through the right hand's four finger knuckles (u, z): the sword's grip lies along it,
+     * GRIP_WRAP below the hand's mid-plane, and every finger bends at right angles to it.
+     */
+    private void fitGrip() {
+        float mz = 0, mu = 0;
+        for (int f = 1; f < 5; f++) {
+            mu += ArmFingers.PIVOT_DIR[f * 4];
+            mz += ArmFingers.PIVOT_DIR[f * 4 + 1];
+        }
+        mu /= 4;
+        mz /= 4;
+        float szz = 0, szu = 0;
+        for (int f = 1; f < 5; f++) {
+            float dz = ArmFingers.PIVOT_DIR[f * 4 + 1] - mz, du = ArmFingers.PIVOT_DIR[f * 4] - mu;
+            szz += dz * dz;
+            szu += dz * du;
+        }
+        float slope = szu / szz;                          // du per dz along the grip line
+        float gl = (float) Math.sqrt(1 + slope * slope);
+        float gu = slope / gl, gz = 1f / gl;              // grip line direction (u, z), toward the little finger
+        float nu = gz, nz = -gu;                          // across it, toward the fingertips
+        if (nu < 0) { nu = -nu; nz = -nz; }
+        for (int f = 1; f < 5; f++) {
+            float pu = ArmFingers.PIVOT_DIR[f * 4], pz = ArmFingers.PIVOT_DIR[f * 4 + 1];
+            float off = (pu - mu) * nu + (pz - mz) * nz;  // knuckle's distance off the line
+            gripFingers[f * 4] = pu - nu * off;
+            gripFingers[f * 4 + 1] = pz - nz * off;
+            gripFingers[f * 4 + 2] = nu;
+            gripFingers[f * 4 + 3] = nz;
+        }
+        // grip centre between the index and little fingers, under the hand; blade out of the thumb side
+        float zi = ArmFingers.PIVOT_DIR[4 + 1], zl = ArmFingers.PIVOT_DIR[16 + 1];
+        swordO[0] = mu + slope * ((zi + zl) * 0.5f - mz);
+        swordO[1] = -GRIP_WRAP;
+        swordO[2] = (zi + zl) * 0.5f;
+        swordB[0] = -gu; swordB[1] = 0; swordB[2] = -gz;  // toward the thumb (-z on the right hand)
+        // edge faces where the fingers point, turned about the blade by SW_TWIST (F = B x E = -y)
+        float c = (float) Math.cos(SW_TWIST), sn = (float) Math.sin(SW_TWIST);
+        swordE[0] = nu * c; swordE[1] = -sn; swordE[2] = nz * c;
+    }
 
     /**
      * @param dt         frame time
@@ -51,16 +112,22 @@ final class ArmRig {
                 fingerK[arm * 5 + f] = ang / ArmFingers.LENGTH[arm * 5 + f];
             }
         }
+        System.arraycopy(sword ? gripFingers : ArmFingers.PIVOT_DIR, 0, fingers, 0, 20);
+        if (sword) {                       // right hand closed around the grip
+            for (int f = 1; f < 5; f++) fingerK[f] = 1f / GRIP_WRAP;
+            fingerK[0] = THUMB_CURL / ArmFingers.LENGTH[0];
+        }
 
         for (int arm = 0; arm < 2; arm++) {
             float side = arm == 0 ? 1f : -1f;
             // wrist low in the corner, forearm pointing ahead, a little inward and up
-            float wx = side * WRIST_X + swayX + side * bobX;
-            float wy = WRIST_Y + swayY - bobY + 0.004f * breathe;
-            float wz = WRIST_Z;
-            float[] ex = norm(-side * AIM_IN, AIM_UP, -1f);
+            boolean holds = sword && arm == 0;
+            float wx = side * (holds ? SW_X : WRIST_X) + swayX + side * bobX;
+            float wy = (holds ? SW_Y : WRIST_Y) + swayY - bobY + 0.004f * breathe;
+            float wz = holds ? SW_Z : WRIST_Z;
+            float[] ex = holds ? norm(-SW_IN, SW_UP, -1f) : norm(-side * AIM_IN, AIM_UP, -1f);
             // back of the hand faces up and a little outward (palms down, thumbs in)
-            float roll = ROLL;
+            float roll = holds ? SW_ROLL : ROLL;
             float[] up = {side * (float) Math.sin(roll), (float) Math.cos(roll), 0f};
             float dot = up[0] * ex[0] + up[1] * ex[1] + up[2] * ex[2];
             float[] ey = norm(up[0] - ex[0] * dot, up[1] - ex[1] * dot, up[2] - ex[2] * dot);

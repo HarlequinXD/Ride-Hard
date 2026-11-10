@@ -28,7 +28,7 @@ import org.lwjgl.opengl.GL20;
 final class Overlay {
 
     static final class State {
-        boolean loading, fastTime, help, pad, clickToLook, invertY;
+        boolean loading, fastTime, help, pad, clickToLook, invertY, sword;
         float progress, sinceReady, hour;
         String stage = "", weather = "";
     }
@@ -93,7 +93,7 @@ final class Overlay {
         if (s.loading) return "L" + Math.round(shownProgress * 400) + s.stage;
         int titleAlpha = s.sinceReady < 6f ? Math.round(32 * Math.max(0f, Math.min(1f, (6f - s.sinceReady) / 2f))) : 0;
         int hh = (int) s.hour, mm = (int) ((s.hour - hh) * 60f);
-        return "G" + titleAlpha + s.weather + s.fastTime + hh + ":" + mm + s.help + s.pad + s.clickToLook + s.invertY;
+        return "G" + titleAlpha + s.weather + s.fastTime + hh + ":" + mm + s.help + s.pad + s.clickToLook + s.invertY + s.sword;
     }
 
     private void paint(State s, int w, int h) {
@@ -145,10 +145,10 @@ final class Overlay {
 
         if (s.help) {
             String[] lines = s.pad
-                    ? new String[]{"Left stick  walk", "Right stick  look", "Y  change the weather", "X  speed up time",
+                    ? new String[]{"Left stick  walk", "Right stick  look", "Y  change the weather", "X  speed up time", "B  " + (s.sword ? "sheathe" : "draw") + " the sword",
                     "Click right stick  invert look" + (s.invertY ? " (on)" : ""), "View / Menu  hide this help"}
                     : new String[]{"WASD / arrows  walk", "Mouse  look (Esc frees the mouse)", "Q  change the weather",
-                    "T  speed up time", "I  invert look" + (s.invertY ? " (on)" : ""), "F11  full screen", "F1  hide this help"};
+                    "T  speed up time", "F  " + (s.sword ? "sheathe" : "draw") + " the sword", "I  invert look" + (s.invertY ? " (on)" : ""), "F11  full screen", "F1  hide this help"};
             g.setFont(new Font(Font.SERIF, Font.PLAIN, Math.round(15 * u)));
             float lh = 21 * u, bx = 22 * u, by = h - 22 * u - lines.length * lh;
             g.setColor(new Color(20, 14, 10, 110));
