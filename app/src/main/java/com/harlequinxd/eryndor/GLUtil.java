@@ -2,6 +2,7 @@ package com.harlequinxd.eryndor;
 
 import android.content.res.AssetManager;
 import android.opengl.GLES20;
+import android.opengl.GLES30;
 import android.util.Log;
 
 import java.io.ByteArrayOutputStream;
@@ -58,6 +59,42 @@ final class GLUtil {
             throw new RuntimeException("Shader compile failed: " + log);
         }
         return s;
+    }
+
+    /** Float data texture (1, 2 or 4 channels, 32-bit), nearest, read with texelFetch. Needs GLES 3. */
+    static int floatTexture(int existing, float[] data, int w, int h, int channels) {
+        java.nio.FloatBuffer fb = ByteBuffer.allocateDirect(data.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+        fb.put(data).position(0);
+        int[] t = {existing};
+        if (existing == 0) GLES20.glGenTextures(1, t, 0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t[0]);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 4);
+        int internal = channels == 4 ? GLES30.GL_RGBA32F : (channels == 2 ? GLES30.GL_RG32F : GLES30.GL_R32F);
+        int format = channels == 4 ? GLES20.GL_RGBA : (channels == 2 ? GLES30.GL_RG : GLES30.GL_RED);
+        GLES30.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, internal, w, h, 0, format, GLES20.GL_FLOAT, fb);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        return t[0];
+    }
+
+    /** Leaf sheet: RGBA, mipmapped, clamped. */
+    static int atlas(int[] argb, int w, int h) {
+        ByteBuffer bb = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder());
+        for (int c : argb) bb.put((byte) (c >> 16)).put((byte) (c >> 8)).put((byte) c).put((byte) (c >>> 24));
+        bb.position(0);
+        int[] t = new int[1];
+        GLES20.glGenTextures(1, t, 0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t[0]);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, bb);
+        GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        return t[0];
     }
 
     /** Small RGBA data texture, repeating, nearest (one texel per cell). */

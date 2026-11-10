@@ -61,7 +61,18 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     // world data built off the GL thread, then uploaded once ready
     private volatile boolean dataReady;
     private Thread builder;
-    private int[] heightData, groundData, cloudData;
+    private int[] heightData, groundData, groundBase, cloudData;
+    volatile TreeLibrary library;
+    private int treePrimTex, treeCellTex, treeIdxTex, leafAtlasTex, uploadedTreeVersion = -1;
+    private volatile int[] reshadowed;                  // ground re-shadowed after a species edit
+    private final float[] treeMeta = new float[TreeLibrary.SLOTS * TreeLibrary.META * 4];
+
+    // Tree Builder preview: one species shown at a fixed spot, camera orbiting it
+    volatile int previewSlot = -1;
+    volatile float orbitYaw = 0.6f, orbitDist = 16f, orbitPitch = 0.15f, previewYaw;
+    /** Where the preview tree sits on screen, in NDC x (−0.48 keeps it clear of the builder panel). */
+    volatile float previewScreenX = 0f;
+    static final float PREVIEW_X = 128f, PREVIEW_Z = 170f;
     private byte[] detailData, matData, fernData, treeData;
     private boolean uploaded;
 
@@ -93,6 +104,13 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         Loading.set("Waking the realm", 0.01f);
         int[] heights = WorldTextures.heightTexture();             // shaping the land, carving Hollow Hill
         int[] ground = loadGround();                                // painting (or reading the saved world)
+        Loading.set("Growing the trees", 0.81f);
+        TreeLibrary lib = new TreeLibrary(cacheDir);
+        lib.growAll();
+        library = lib;
+        Loading.set("Casting the tree shadows", 0.82f);
+        groundBase = ground;
+        ground = TreeShadows.apply(ground, WorldTextures.trees(), lib);
         detailData = WorldTextures.detail();
         matData = WorldTextures.materials();
         fernData = WorldTextures.ferns();
@@ -119,12 +137,35 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         fernTex = GLUtil.cells(fernData, WorldTextures.FERN_GRID);
         treeTex = GLUtil.cells(treeData, WorldTextures.TREE_GRID);
         cloudTex = GLUtil.texture(cloudData, WorldTextures.CLOUD_SIZE, false);
+        leafAtlasTex = GLUtil.atlas(LeafAtlas.build(), LeafAtlas.W, LeafAtlas.H);
+        uploadTrees();
         Loading.set("Lighting the lanterns", 0.99f);
         eyeY = Float.NaN;
         uploaded = true;
         lastNanos = System.nanoTime();
         Loading.set("Ready", 1f);
         sky.worldReady = true;
+    }
+
+    /** (Re)upload the packed species data whenever the library changes. */
+    private void uploadTrees() {
+        TreeLibrary lib = library;
+        if (lib == null) return;
+        synchronized (lib) {
+            treePrimTex = GLUtil.floatTexture(treePrimTex, lib.primTex, TreeLibrary.TEX_W, lib.primRows, 4);
+            treeCellTex = GLUtil.floatTexture(treeCellTex, lib.cellTex, TreeLibrary.TEX_W, lib.cellRows, 2);
+            treeIdxTex = GLUtil.floatTexture(treeIdxTex, lib.indexTex, TreeLibrary.TEX_W, lib.indexRows, 1);
+            System.arraycopy(lib.meta, 0, treeMeta, 0, treeMeta.length);
+            uploadedTreeVersion = lib.version;
+        }
+    }
+
+    /** After a species is saved, recast the tree shadows on the ground off the GL thread. */
+    void reshadow() {
+        TreeLibrary lib = library;
+        int[] base = groundBase;
+        if (lib == null || base == null) return;
+        new Thread(() -> reshadowed = TreeShadows.apply(base, WorldTextures.trees(), lib), "reshadow").start();
     }
 
     /** The ground takes a few seconds to paint, so colours + detail heights are cached on disk. */
@@ -233,7 +274,16 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         time += dt;
         if (time > 3600f) time -= 3600f;
 
-        updatePlayer(dt);
+        if (library != null && library.version != uploadedTreeVersion) uploadTrees();
+        int[] rs = reshadowed;
+        if (rs != null) {
+            reshadowed = null;
+            GLES20.glDeleteTextures(1, new int[]{groundTex}, 0);
+            groundTex = GLUtil.texture(rs, WorldTextures.GROUND_SIZE, false);
+        }
+        int slot = previewSlot;
+        if (slot < 0) updatePlayer(dt);
+        else input.consumeLook(look);
         sky.update(dt);
         windX = (windX + sky.windSpeed * 0.92 * dt) % 2000.0;
         windZ = (windZ + sky.windSpeed * 0.38 * dt) % 2000.0;
@@ -263,13 +313,39 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE6);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, treeTex);
         GLES20.glUniform1i(u(sceneProg, "uTrees"), 6);
+        bindTex(7, treePrimTex, "uTreePrims");
+        bindTex(8, treeCellTex, "uTreeCells");
+        bindTex(9, treeIdxTex, "uTreeIdx");
+        bindTex(10, leafAtlasTex, "uLeafAtlas");
+        GLES20.glUniform4fv(u(sceneProg, "uTreeMeta"), TreeLibrary.SLOTS * TreeLibrary.META, treeMeta, 0);
 
         float tanY = (float) Math.tan(FOV_Y / 2);
         GLES20.glUniform2f(u(sceneProg, "uTanHalf"), tanY * fboW / fboH, tanY);
-        GLES20.glUniform1f(u(sceneProg, "uYaw"), yaw);
-        GLES20.glUniform1f(u(sceneProg, "uPitch"), pitch);
-        GLES20.glUniform3f(u(sceneProg, "uCam"), (float) mod(px, 256.0),
-                eyeY + bobAmt * (float) Math.sin(bobPhase) * 0.045f, (float) mod(pz, 256.0));
+        float camYaw = yaw, camPitch = pitch;
+        double camX = px, camZ = pz;
+        float camY = eyeY + bobAmt * (float) Math.sin(bobPhase) * 0.045f;
+        float pvX = 0, pvY = 0, pvZ = 0;
+        if (slot >= 0 && library != null) {
+            float h = library.specs[slot].get(TreeSpec.HEIGHT);
+            float base = WorldTextures.floorAt(PREVIEW_X, PREVIEW_Z);
+            orbitYaw += look[0] * 0.008f;
+            orbitPitch = Math.max(-0.1f, Math.min(1.2f, orbitPitch + look[1] * 0.006f));
+            float dist = orbitDist;
+            float tx = PREVIEW_X, ty = base + h * 0.45f, tz = PREVIEW_Z;
+            camX = tx + Math.sin(orbitYaw) * Math.cos(orbitPitch) * dist;
+            camZ = tz + Math.cos(orbitYaw) * Math.cos(orbitPitch) * dist;
+            camY = ty + (float) Math.sin(orbitPitch) * dist;
+            camY = Math.max(camY, WorldTextures.floorAt(camX, camZ) + 0.6f);
+            double dx = tx - camX, dy = ty - camY, dz = tz - camZ;
+            camYaw = (float) (Math.atan2(dx, -dz) - Math.atan(previewScreenX * tanY * fboW / fboH));
+            camPitch = (float) Math.atan2(dy, Math.sqrt(dx * dx + dz * dz));
+            pvX = tx; pvY = base - 0.05f; pvZ = tz;
+        }
+        GLES20.glUniform1f(u(sceneProg, "uYaw"), camYaw);
+        GLES20.glUniform1f(u(sceneProg, "uPitch"), camPitch);
+        GLES20.glUniform4f(u(sceneProg, "uPreview"), pvX, pvY, pvZ, slot >= 0 ? slot : -1f);
+        GLES20.glUniform1f(u(sceneProg, "uPreviewYaw"), previewYaw);
+        GLES20.glUniform3f(u(sceneProg, "uCam"), (float) mod(camX, 256.0), camY, (float) mod(camZ, 256.0));
         GLES20.glUniform2f(u(sceneProg, "uCloudO"), (float) mod(px + windX, 2000.0), (float) mod(pz + windZ, 2000.0));
         GLES20.glUniform3fv(u(sceneProg, "uSunDir"), 1, sky.sunDir, 0);
         GLES20.glUniform3fv(u(sceneProg, "uSkyTop"), 1, sky.skyTop, 0);
@@ -350,12 +426,23 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         float ceil = WorldTextures.ceilingAt(ax, az);
         if (ceil - ahead < MIN_HEADROOM) return;
         float[] tr = WorldTextures.trunkNear(ax, az);           // tree trunks are solid
-        if (tr != null) {
+        TreeLibrary lib = library;
+        if (tr != null && lib != null) {
+            int sp = (int) tr[2];
+            TreeSpec spec = lib.specs[sp];
+            float sz = Math.min(tr[3], TreeLibrary.MAX_HALF_WIDTH / Math.max(0.1f, TreeShadows.halfWidth(lib.models[sp])));
+            float rad = spec.get(TreeSpec.TRUNK_R) * (1f + 0.5f * spec.get(TreeSpec.FLARE)) * sz;
             double tx = ax - tr[0], tz = az - tr[1];
-            if (tx * tx + tz * tz < (tr[2] + 0.3) * (tr[2] + 0.3)) return;
+            if (tx * tx + tz * tz < (rad + 0.3) * (rad + 0.3)) return;
         }
         px = nx;
         pz = nz;
+    }
+
+    private void bindTex(int unit, int tex, String name) {
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + unit);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
+        GLES20.glUniform1i(u(sceneProg, name), unit);
     }
 
     private void drawQuad() {

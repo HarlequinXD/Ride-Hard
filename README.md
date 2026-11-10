@@ -20,12 +20,20 @@ Hollowspire.
   every grass blade has its own height. **Ferns are 3D**: an implicit shape (fronds that rise,
   arch and droop, leaflets with gaps, air underneath) tested by each pixel's ray; no meshes, no
   voxel grid.
-- **Trees (10 species, per pixel)**: oak, silver birch, Scots pine, spruce, willow, dead tree,
-  autumn maple, blossom, ancient yew and poplar. Each is an implicit shape (trunk with root flare
-  plus a crown of clustered spheres, tiered cone, ellipsoid, willow dome with hanging curtains, or
-  bare branches) with lumpy, gapped foliage computed per pixel; no meshes. Rays walk the 16 m tree
-  cells they cross, nearest first, and stop at the terrain. Trees grow in groves (broadleaf or
-  pine wood), willows by the river, others scattered; baked shadows; solid trunks.
+- **Trees (10 species, spline-grown, per pixel)**: oak, silver birch, Scots pine, spruce, willow,
+  dead tree, autumn maple, blossom, ancient yew and poplar. Each species is grown from a spec:
+  a curved trunk spline with root flare, branches, sub-branches and twigs (tapered capsules that
+  bend, droop and curl), and leaf sprigs on the outer twigs. Leaves are cards textured from a
+  hand-painted leaf atlas (oval, oak, maple, birch, willow, needles, blossom, heart) with veins
+  and two colours. Nothing is a mesh: every pixel's ray walks the 16 m tree cells, steps through
+  each species' zone grid and tests the capsules and leaf cards inside. Bark has 4 textures.
+  Shadows on the ground are cast from the real branches and leaves.
+- **Tree Builder** (button top-left): pick any of the 10 species and edit it with sliders in six
+  tabs (Trunk, Branches, Sub-branches, Twigs, Leaves, Bark): height, bend, flare, branch count,
+  angle, droop, twig density, leaf shape, size, count and colours, bark type and colour. The tree
+  regrows live in a preview (drag to orbit, pinch to zoom). Save applies it to every tree of that
+  species in the world (and keeps it between launches), Reset restores the original, New seed
+  regrows with a different random layout, Copy text puts the spec on the clipboard.
 - **Per-pixel normal mapping**: every material has a tiny height field (grass blade streaks,
   earth grains and pebbles, stone pitting and hairline cracks, wood grain, water ripples). Each
   pixel derives its normal from it with differences sized to its footprint on the ground, adds the

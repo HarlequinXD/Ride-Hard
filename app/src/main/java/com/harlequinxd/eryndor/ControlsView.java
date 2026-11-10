@@ -24,7 +24,9 @@ final class ControlsView extends View {
     private int moveId = -1, lookId = -1;
     private float baseX, baseY, knobX, knobY, lastX, lastY;
 
-    private final RectF btnWeather = new RectF(), btnTime = new RectF();
+    private final RectF btnWeather = new RectF(), btnTime = new RectF(), btnTrees = new RectF();
+    /** Opens the Tree Builder; set by MainActivity. */
+    Runnable onTrees;
     private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint knob = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint btn = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -60,6 +62,7 @@ final class ControlsView extends View {
         float bw = 128 * dp, bh = 34 * dp, m = 12 * dp;
         btnWeather.set(w - m - bw, m, w - m, m + bh);
         btnTime.set(w - 2 * m - 2 * bw, m, w - 2 * m - bw, m + bh);
+        btnTrees.set(m, m, m + 110 * dp, m + bh);
     }
 
     @Override
@@ -73,6 +76,7 @@ final class ControlsView extends View {
                 float x = e.getX(idx), y = e.getY(idx);
                 if (btnWeather.contains(x, y)) { sky.requestNextWeather(); break; }
                 if (btnTime.contains(x, y)) { sky.fastTime = !sky.fastTime; break; }
+                if (btnTrees.contains(x, y) && sky.worldReady && onTrees != null) { onTrees.run(); break; }
                 if (x < getWidth() * 0.45f && moveId == -1) {
                     moveId = id;
                     baseX = knobX = x;
@@ -170,6 +174,7 @@ final class ControlsView extends View {
         int wi = sky.weather;
         drawButton(c, btnWeather, SkyState.WEATHER_NAMES[wi]);
         drawButton(c, btnTime, sky.fastTime ? "Time ×20" : "Time ×1");
+        drawButton(c, btnTrees, "\u2618 Trees");
         float hr = sky.hour;
         int hh = (int) hr, mm = (int) ((hr - hh) * 60f);
         String clock = String.format(Locale.US, "%02d:%02d", hh, mm);

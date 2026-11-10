@@ -43,7 +43,7 @@ final class WorldTextures {
         return treeCache;
     }
 
-    /** Trunk radius (scaled) and world position of the tree in the cell containing (x, z), or null. */
+    /** World position, species and size of the tree in the cell containing (x, z), or null. */
     static float[] trunkNear(double x, double z) {
         byte[] t = treeCache;
         if (t == null) return null;
@@ -54,9 +54,9 @@ final class WorldTextures {
         double baseX = Math.floor(x / TREE_CELL) * TREE_CELL, baseZ = Math.floor(z / TREE_CELL) * TREE_CELL;
         float tx = (float) (baseX + TREE_CELL * 0.5 + ((t[o] & 255) / 255f - 0.5f) * 3f);
         float tz = (float) (baseZ + TREE_CELL * 0.5 + ((t[o + 1] & 255) / 255f - 0.5f) * 3f);
-        int v = Math.round((t[o + 2] & 255) / 25f);
+        int v = Math.min(9, (t[o + 2] & 255) / 25);
         float sz = 0.85f + ((a / 255f) - 0.5f) * 0.7f;
-        return new float[]{tx, tz, TREE_TRUNK[Math.min(9, v)] * sz * 1.7f};
+        return new float[]{tx, tz, v, sz};
     }
 
     static final int FERN_GRID = 64;                 // 64 x 64 cells of 4 m over the 256 m tile
@@ -791,20 +791,16 @@ final class WorldTextures {
                 int o = (cz * TREE_GRID + cx) * 4;
                 treeCache[o] = (byte) Math.round(ox * 255);
                 treeCache[o + 1] = (byte) Math.round(oz * 255);
-                treeCache[o + 2] = (byte) (v * 25);
+                treeCache[o + 2] = (byte) (v * 25 + rnd.nextInt(25));        // species * 25 + yaw step
                 treeCache[o + 3] = (byte) (present ? 128 + Math.round(size * 127) : 0);
-                if (present) {
-                    float sz = 0.85f + (size) * 0.35f;
-                    treeShadow(R, G, B, px, pz, TREE_CROWN[v] * sz * PPM, TREE_TOP[v] * sz * PPM, TREE_TRUNK[v] * sz * PPM, v == 5);
-                }
             }
         // guarantee every species appears at least once
         for (int v = 0; v < 10; v++) {
             if (count[v] > 0) continue;
             for (int o = 0; o < treeCache.length; o += 4)
-                if ((treeCache[o + 3] & 255) >= 128 && count[Math.round((treeCache[o + 2] & 255) / 25f)] > 1) {
-                    count[Math.round((treeCache[o + 2] & 255) / 25f)]--;
-                    treeCache[o + 2] = (byte) (v * 25);
+                if ((treeCache[o + 3] & 255) >= 128 && count[(treeCache[o + 2] & 255) / 25] > 1) {
+                    count[(treeCache[o + 2] & 255) / 25]--;
+                    treeCache[o + 2] = (byte) (v * 25 + (treeCache[o + 2] & 255) % 25);
                     count[v]++;
                     break;
                 }
