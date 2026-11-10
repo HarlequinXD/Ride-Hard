@@ -102,6 +102,8 @@ float coverage(float n) {
 }
 
 // Sky for an upward direction d (d.y >= 0). Also used, mirrored, for water reflections.
+float gOpenSky = 1.0;    // set by skyColor: how much open sky (not cloud, peak or tower) that direction shows
+
 vec3 skyColor(vec3 d) {
     float h = d.y;
     vec3 sky = mix(uSkyHor, uSkyTop, pow(h, 0.55));
@@ -131,6 +133,7 @@ vec3 skyColor(vec3 d) {
     vec3 ccol = mix(cLit, cCore, thick * (0.45 + 0.55 * uCloudDark));
     ccol = mix(ccol, uFogCol, 0.30 * (1.0 - smoothstep(0.0, 0.35, d.y)));
     sky = mix(sky, ccol, cd * 0.95);
+    gOpenSky = 1.0 - cd * (0.55 + 0.45 * thick);
 
     // ---- horizon: far snow-capped range, the Hollowspire, then forested foothills
     vec2 az = normalize(d.xz + vec2(1e-5));
@@ -147,6 +150,7 @@ vec3 skyColor(vec3 d) {
         float snow = step(mh * 0.58 + 0.008 * slope, h) * step(0.045, mh);
         mc = mix(mc, uAmbient * (0.80 + 0.30 * face * uSunVis), snow);
         sky = mix(mc, uFogCol, haze);
+        gOpenSky = 0.0;
     }
 
     // the Hollowspire: a lone, slightly leaning black tower to the north
@@ -161,15 +165,18 @@ vec3 skyColor(vec3 d) {
         tc += vec3(0.35, 0.95, 0.85) * glow;
         sky = mix(tc, uFogCol, haze * 0.6);
         sky += vec3(0.35, 0.95, 0.85) * glow * 0.6;
+        gOpenSky = 0.0;
     }
 
     float hh = 0.003 + 0.013 * vnoise(az * 7.0 + 20.0) + 0.004 * vnoise(az * 40.0) + 0.002 * hash(floor(az * 400.0));
     if (h < hh) {
         vec3 fc = vec3(0.13, 0.19, 0.11) * uAmbient * (0.75 + 0.35 * face * uSunVis);
         sky = mix(fc, uFogCol, haze * 0.65);
+        gOpenSky = 0.0;
     }
 
     sky = mix(sky, uFogCol, uMist * 0.75 * (1.0 - smoothstep(0.0, 0.5, h)));
+    gOpenSky *= 1.0 - uMist * 0.75 * (1.0 - smoothstep(0.0, 0.5, h));
     return sky;
 }
 
@@ -870,7 +877,10 @@ void main() {
     vec3 dd = vec3(d.x, abs(d.y), d.z);
     dd.xz += rip * 0.045 * water;
     dd.y = max(dd.y, 0.0005);
+    gOpenSky = 1.0;
     vec3 sky = skyColor(normalize(dd));
+    // sun shafts: alpha carries how much open sky this pixel shows (0 for anything solid)
+    float shaftMask = (1.0 - hit) * step(0.0, d.y) * gOpenSky;
 
     // ---- lighting: ambient + sun relative to flat ground (the texture already has baked light),
     //      cloud shadows, darkness under rock, and a lantern near the player
@@ -982,6 +992,7 @@ void main() {
             vec3 tc = pbr(alb, tnf, -d, isLeaf > 0.5 ? 0.55 : 0.88, 0.0, tao, 1.0, tao, tlamp, isLeaf * 0.9);
             tc = mix(tc, uFogCol, 1.0 - exp(-bestT * uFog));
             col = tc + uFlash * vec3(0.55, 0.60, 0.75) * 0.4;
+            shaftMask = 0.0;
         }
     }
 
@@ -1037,6 +1048,7 @@ void main() {
                 sc = pbr(lea, nw, -d, 0.62, 0.0, 1.0, swordOpen, mix(0.6, 1.0, step(0.16, band)), slamp, 0.0);
             }
             col = sc;
+            shaftMask = 0.0;
         }
         if (ai >= 0) {
             vec3 alb, nc;
@@ -1052,6 +1064,7 @@ void main() {
             float sat = max(alb.r, max(alb.g, alb.b)) - min(alb.r, min(alb.g, alb.b));
             float metal = clamp(1.0 - 5.0 * sat, 0.0, 1.0) * smoothstep(0.18, 0.40, lum);
             col = pbr(alb, nw, -d, mix(0.62, 0.38, metal), metal * 0.85, 1.0, armOpen, 1.0, 1.0 * adark, 0.0);
+            shaftMask = 0.0;
         }
     }
 
@@ -1068,5 +1081,5 @@ void main() {
 
     // ---- 15-bit ordered dither
     col = floor(clamp(col, 0.0, 1.0) * 31.0 + bayer4(gl_FragCoord.xy)) / 31.0;
-    fragColor = vec4(col, 1.0);
+    fragColor = vec4(col, shaftMask);
 }

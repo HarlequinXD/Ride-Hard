@@ -47,6 +47,8 @@ final class SkyState {
     final float[] fogCol = new float[3];
     final float[] mtnCol = new float[3];
     float fogDensity, stars, cover, cloudDark, rain, sunVis, mist, windSpeed;
+    /** How grey the weather makes the light, 0..1 (used by the colour grade). */
+    float greyness;
     float wetness, lightning;
 
     void requestNextWeather() {
@@ -80,6 +82,7 @@ final class SkyState {
         cloudDark = cur[1];
         rain = cur[3];
         float grey = cur[4];
+        greyness = grey;
         mist = cur[5];
         windSpeed = cur[6];
 

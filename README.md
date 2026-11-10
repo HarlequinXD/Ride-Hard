@@ -43,6 +43,15 @@ Hollowspire.
   soft-shoulder tone map. Roughness per material (grass 0.9, cobbles 0.62, wet ground glossier),
   metals take their colour as F0 (the sword's steel, the iron guard, brass bands, the arm plates
   and buckles), and leaves and grass let light through from behind.
+- **Sun shafts and glare**: the scene writes how much open sky each pixel shows into its alpha
+  (clouds, hills, the Hollowspire, trees, arms and the sword all block it); the final pass blurs
+  that mask toward the sun's place on screen (dithered steps) for light shafts through branches
+  and around clouds, and adds a sun halo, a horizontal glint and lens ghosts that dim when the
+  sun's disc is hidden.
+- **Colour grading**: film-like white balance, S-curve contrast, saturation, split toning (cool
+  shadows, warm highlights), black point and vignette, driven by the time of day and weather:
+  warm and rich at golden hour, neutral at noon, softer and cooler in grey weather, rain and mist,
+  moonlit blue at night. Then back to dithered 15-bit colour.
 - **Terrain texture mask**: `app/src/main/assets/terrain/terrain_mask.png` (2048 x 2048, one
   pixel per 12.5 cm) is a painted colour map that picks the texture for each patch of ground.
   Colours snap to the nearest palette entry, so soft brushes work:

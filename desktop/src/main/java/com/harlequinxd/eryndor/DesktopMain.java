@@ -186,6 +186,12 @@ public final class DesktopMain {
                 readyAt = System.currentTimeMillis();
                 // ERYNDOR_TURN=dx,dy turns the view once the world is ready (for testing), in degrees
                 String turn = System.getenv("ERYNDOR_TURN");
+                if ("sun".equals(turn)) {                  // face the sun, a little below it
+                    float sx = sky.sunDir[0], sy = sky.sunDir[1], sz = sky.sunDir[2];
+                    float ty = (float) Math.atan2(sx, -sz), tp = (float) Math.asin(sy) - 0.12f;
+                    input.addLook(ty / LOOK_SENS, -(tp + 0.04f) / LOOK_SENS);
+                    turn = null;
+                }
                 if (turn != null) {
                     String[] p = turn.split(",");
                     input.addLook((float) Math.toRadians(Float.parseFloat(p[0])) / LOOK_SENS,

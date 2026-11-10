@@ -425,6 +425,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             pvX = tx; pvY = base - 0.05f; pvZ = tz;
         }
         GLES20.glUniform1f(u(sceneProg, "uYaw"), camYaw);
+        projectSun(camYaw, camPitch, tanY * fboW / fboH, tanY);
         GLES20.glUniform1f(u(sceneProg, "uPitch"), camPitch);
         GLES20.glUniform4f(u(sceneProg, "uPreview"), pvX, pvY, pvZ, slot >= 0 ? slot : -1f);
         GLES20.glUniform1f(u(sceneProg, "uPreviewYaw"), previewYaw);
@@ -470,7 +471,56 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, fboTex);
         GLES20.glUniform1i(u(blitProg, "uTex"), 0);
+        GLES20.glUniform2f(u(blitProg, "uSunUv"), sunU, sunV);
+        GLES20.glUniform1f(u(blitProg, "uSunOn"), sunOn);
+        GLES20.glUniform3fv(u(blitProg, "uSunTint"), 1, sky.sunCol, 0);
+        GLES20.glUniform1f(u(blitProg, "uAspect"), fboW / (float) fboH);
+        gradeFromSky();
+        GLES20.glUniform4f(u(blitProg, "uGrade"), grade[0], grade[1], grade[2], grade[3]);
         drawQuad();
+    }
+
+    private final float[] grade = new float[4];
+
+    /**
+     * Realistic colour grade from the time of day and the weather: warm and rich at golden hour,
+     * neutral at noon, cooler and softer under grey skies, rain and mist, moonlit blue at night.
+     */
+    private void gradeFromSky() {
+        float e = sky.sunDir[1];                                       // sun elevation (sin)
+        float day = clamp01((e + 0.05f) / 0.25f);
+        float golden = day * clamp01(1f - Math.abs(e - 0.12f) / 0.22f) * (1f - sky.greyness);
+        float grey = Math.max(sky.greyness, sky.mist * 0.8f);
+        float night = sky.stars;
+        grade[0] = Math.max(-1f, Math.min(1f, 0.15f * day + 0.75f * golden - 0.45f * grey - 0.7f * night));
+        grade[1] = 1.08f + 0.10f * golden - 0.28f * grey - 0.30f * night;  // saturation
+        grade[2] = 0.30f * day * (1f - 0.55f * grey) + 0.12f;              // contrast
+        grade[3] = 0.22f + 0.10f * night;                                  // vignette
+    }
+
+    private static float clamp01(float v) {
+        return Math.max(0f, Math.min(1f, v));
+    }
+
+    // sun on screen, for the shafts and glare in the blit pass
+    private float sunU, sunV, sunOn;
+
+    /** Project the sun direction with the inverse of the shader's view rotation (yaw, then pitch). */
+    private void projectSun(float camYaw, float camPitch, float tanX, float tanY) {
+        double x = sky.sunDir[0], y = sky.sunDir[1], z = sky.sunDir[2];
+        double cyw = Math.cos(camYaw), syw = Math.sin(camYaw), cp = Math.cos(camPitch), sp = Math.sin(camPitch);
+        double x1 = x * cyw + z * syw, z1 = -x * syw + z * cyw;
+        double y2 = y * cp + z1 * sp, z2 = -y * sp + z1 * cp;
+        if (z2 > -0.05 || previewSlot >= 0) {      // behind you (or the Tree Builder)
+            sunOn = 0f;
+            return;
+        }
+        float nx = (float) (x1 / (-z2 * tanX)), ny = (float) (y2 / (-z2 * tanY));
+        sunU = nx * 0.5f + 0.5f;
+        sunV = ny * 0.5f + 0.5f;
+        float off = Math.max(Math.abs(nx), Math.abs(ny));             // fade as it leaves the screen
+        float edge = Math.max(0f, Math.min(1f, (1.8f - off) / 0.8f));
+        sunOn = sky.sunVis * edge * Math.max(0f, Math.min(1f, (float) y * 6f + 0.3f));
     }
 
     private void updatePlayer(float dt) {
