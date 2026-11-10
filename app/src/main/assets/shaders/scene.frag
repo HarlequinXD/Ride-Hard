@@ -18,6 +18,7 @@ uniform sampler2D uHeight;   // r = floor, g = cave ceiling, b = rock top, a = s
 uniform sampler2D uDetail;   // fine relief on the floor: grass, pebbles, shrubs, rocks, walls (0..3 m)
 uniform sampler2D uMat;      // material id per texel: 0 grass, 1 earth, 2 stone, 3 wood, 4 water, 5 plant
 uniform sampler2D uFerns;    // one optional fern per 4 m cell: offset xz, size, presence + rotation
+uniform sampler2D uTrees;    // one optional tree per 16 m cell: offset xz, species * 25, presence + size
 
 uniform vec2 uTanHalf;
 uniform float uYaw;
@@ -253,6 +254,112 @@ float microHeight(vec2 wp, float mid) {
     return 0.010 * vnoise(wp * 40.0) + 0.006 * vnoise(wp * 13.0);   // leafy plants
 }
 
+// ---- trees: ten species, each a per-pixel implicit shape (no meshes, no voxel grid)
+const float TC = 16.0;          // tree cell size; every tree fits inside its own cell
+const float TREE_FAR = 300.0;
+
+float hash3(vec3 p) { return hash(p.xy + p.z * vec2(17.13, 31.71)); }
+
+// A: trunk height, trunk radius, crown radius, crown centre height
+// B: crown type (0 clusters, 1 tiered cone, 2 ellipsoid, 3 willow, 4 bare), leaf gaps, top, squash/stretch
+void treeParams(float v, out vec4 A, out vec4 B, out vec3 leaf, out vec3 bark) {
+    if (v < 0.5)      { A = vec4(3.0, 0.38, 4.2, 5.8); B = vec4(0.0, 0.22, 10.0, 0.85); leaf = vec3(0.19, 0.31, 0.11); bark = vec3(0.30, 0.25, 0.20); }  // oak
+    else if (v < 1.5) { A = vec4(4.5, 0.16, 2.0, 7.0); B = vec4(2.0, 0.40, 10.4, 1.6);  leaf = vec3(0.42, 0.52, 0.20); bark = vec3(0.86, 0.85, 0.80); }  // birch
+    else if (v < 2.5) { A = vec4(3.2, 0.26, 2.9, 0.0); B = vec4(1.0, 0.12, 11.5, 1.0);  leaf = vec3(0.11, 0.23, 0.13); bark = vec3(0.40, 0.26, 0.17); }  // scots pine
+    else if (v < 3.5) { A = vec4(1.2, 0.24, 2.3, 0.0); B = vec4(1.0, 0.10, 13.5, 1.0);  leaf = vec3(0.09, 0.19, 0.14); bark = vec3(0.30, 0.22, 0.17); }  // spruce
+    else if (v < 4.5) { A = vec4(2.6, 0.38, 3.9, 6.4); B = vec4(3.0, 0.30, 9.5, 1.0);   leaf = vec3(0.40, 0.52, 0.20); bark = vec3(0.32, 0.27, 0.21); }  // willow
+    else if (v < 5.5) { A = vec4(5.5, 0.26, 3.2, 0.0); B = vec4(4.0, 0.0, 9.0, 1.0);    leaf = vec3(0.0);              bark = vec3(0.44, 0.41, 0.38); }  // dead
+    else if (v < 6.5) { A = vec4(3.0, 0.30, 3.4, 5.6); B = vec4(0.0, 0.25, 9.2, 0.9);   leaf = vec3(0.72, 0.30, 0.08); bark = vec3(0.28, 0.22, 0.18); }  // autumn maple
+    else if (v < 7.5) { A = vec4(2.2, 0.22, 2.9, 4.3); B = vec4(0.0, 0.30, 7.4, 0.85);  leaf = vec3(0.93, 0.63, 0.72); bark = vec3(0.24, 0.17, 0.15); }  // blossom
+    else if (v < 8.5) { A = vec4(1.6, 0.60, 4.0, 3.5); B = vec4(0.0, 0.08, 6.4, 0.6);   leaf = vec3(0.09, 0.17, 0.10); bark = vec3(0.36, 0.25, 0.20); }  // ancient yew
+    else              { A = vec4(1.4, 0.20, 1.5, 8.0); B = vec4(2.0, 0.15, 14.0, 3.6);  leaf = vec3(0.24, 0.35, 0.14); bark = vec3(0.35, 0.30, 0.24); }  // poplar
+}
+
+float segDist(vec3 p, vec3 a, vec3 b) {
+    vec3 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+// signed distance (local metres, unscaled tree) ; part = 0 trunk/branch, 1 crown
+float treeSDF(vec3 q, vec4 A, vec4 B, float seed, out float part) {
+    float trunkH = A.x, rT = A.y, R = A.z, cY = A.w, type = B.x;
+    vec2 lean = (vec2(hash(vec2(seed, 1.0)), hash(vec2(seed, 2.0))) - 0.5) * 0.12;
+    float top = trunkH + 1.2;
+    float ty = clamp(q.y, 0.0, top);
+    float rad = rT * (1.0 - 0.35 * ty / top) * (1.0 + 0.7 * exp(-max(q.y, 0.0) * 3.0));   // root flare
+    float dT = max(length(q.xz - lean * ty) - rad, q.y - top);
+    float dC = 1e3;
+    if (type < 0.5) {                                   // clustered crown
+        vec3 qq = vec3(q.x, cY + (q.y - cY) / B.w, q.z);
+        dC = length(qq - vec3(0.0, cY, 0.0)) - R;
+        for (int i = 0; i < 3; i++) {
+            float fi = float(i);
+            float a = hash(vec2(seed, fi + 3.0)) * 6.2831 + fi * 2.094;
+            vec3 ci = vec3(cos(a) * R * 0.55, cY + (hash(vec2(seed, fi + 7.0)) - 0.3) * R * 0.5, sin(a) * R * 0.55);
+            dC = min(dC, length(qq - ci) - R * 0.62);
+        }
+        dC *= min(B.w, 1.0);
+    } else if (type < 1.5) {                            // tiered cone
+        float yy = B.z - q.y, hgt = B.z - trunkH;
+        float rc = R * clamp(yy / hgt, 0.0, 1.0);
+        rc *= 0.68 + 0.32 * fract(yy / (hgt / 5.0));    // layered skirts
+        dC = max(max((length(q.xz) - rc) * 0.7, -yy), trunkH - q.y);
+    } else if (type < 2.5) {                            // ellipsoid / column
+        dC = length(vec3(q.x, (q.y - cY) / B.w, q.z)) - R;
+    } else if (type < 3.5) {                            // willow: dome + hanging curtains
+        float dome = (length(vec3(q.x, (q.y - cY) / 0.6, q.z)) - R) * 0.6;   // flattened crown
+        float ang = atan(q.z, q.x);
+        float sid = floor(ang * 1.4 * R);
+        float shell = abs(length(q.xz) - R * (0.85 + 0.12 * hash(vec2(sid, seed + 2.0)))) - 0.25;
+        float hang = 0.3 + hash(vec2(sid, seed + 1.0)) * 1.8;   // strands sweep almost to the ground
+        float curtain = max(shell, max(q.y - cY, hang - q.y));
+        if (hash(vec2(sid, seed)) < 0.30) curtain = 1e3;
+        dC = min(dome, curtain);
+    } else {                                            // bare branches
+        vec3 o = vec3(lean.x * trunkH, trunkH * 0.65, lean.y * trunkH);
+        for (int i = 0; i < 5; i++) {
+            float fi = float(i);
+            float a = hash(vec2(seed, fi + 11.0)) * 6.2831 + fi * 1.256;
+            vec3 dir = normalize(vec3(cos(a), 0.5 + 0.7 * hash(vec2(seed, fi + 17.0)), sin(a)));
+            vec3 st = o + vec3(0.0, fi * 0.45, 0.0);
+            vec3 en = st + dir * (2.0 + 1.5 * hash(vec2(seed, fi + 23.0)));
+            dC = min(dC, segDist(q, st, en) - 0.11 * (1.0 - fi * 0.12));
+        }
+    }
+    part = dC < dT ? 1.0 : 0.0;
+    return min(dT, dC);
+}
+
+// crown foliage: lumpy outline plus leaf-sized gaps, all per pixel
+bool foliage(vec3 q, float s, vec4 A, vec4 B, float seed) {
+    float R = A.z;
+    float lump = (vnoise(q.xz * 1.4 + q.y * 0.8 + seed) * 0.6 + vnoise(q.xy * 2.7 + q.z + seed) * 0.4) * R * (B.x > 2.5 ? 0.05 : 0.32);
+    if (s + lump > 0.0) return false;
+    float shellK = smoothstep(-1.4, 0.0, s + lump);
+    return hash3(floor(q * 6.0 + seed)) >= B.y * shellK;
+}
+
+// march one tree inside [t0, t1]; returns hit distance or -1
+float traceTree(vec3 ro, vec3 d, vec3 base, float sz, vec4 A, vec4 B, float seed, float t0, float t1, out float part) {
+    part = 0.0;
+    float t = t0;
+    for (int i = 0; i < 56; i++) {
+        vec3 q = (ro + d * t - base) / sz;
+        float pt;
+        float s = treeSDF(q, A, B, seed, pt) * sz;
+        if (s < 0.0) {
+            if (pt < 0.5 || B.x > 3.5) { part = 0.0; return t; }
+            if (foliage(q, s / sz, A, B, seed)) { part = 1.0; return t; }
+        }
+        float st = max(abs(s) * 0.75, 0.03 + t * 0.0025);
+        if (s < 1.0 * sz && pt > 0.5) st = min(st, 0.05 + t * 0.003);
+        t += st;
+        if (t > t1) break;
+    }
+    return -1.0;
+}
+
 float rockTex(vec3 p) {
     float n = vnoise(vec2(p.x + p.z, p.y) * 2.2) * 0.55 + vnoise(vec2(p.x - p.z, p.y * 3.0) * 5.0) * 0.30
             + hash(floor(vec2(p.x * 7.0 + p.z * 5.0, p.y * 8.0))) * 0.15;
@@ -418,6 +525,89 @@ void main() {
     vec3 missCol = d.y > 0.0 ? sky : uFogCol;
     vec3 col = mix(missCol, ground, hit);
     col += uFlash * vec3(0.55, 0.60, 0.75) * (0.4 + 0.6 * (1.0 - hit)) * open;
+
+    // ---- trees: walk the 16 m cells the ray crosses (nearest first), test each cell's tree
+    {
+        vec2 dir = d.xz;
+        vec2 cell = floor(ro.xz / TC);
+        vec2 sgn = vec2(dir.x >= 0.0 ? 1.0 : -1.0, dir.y >= 0.0 ? 1.0 : -1.0);
+        vec2 inv = 1.0 / max(abs(dir), vec2(1e-5));
+        vec2 tMax = ((cell + max(sgn, 0.0)) * TC - ro.xz) * sgn * inv;
+        vec2 tDel = TC * inv;
+        float tLimit = min(hit > 0.5 ? T : FAR, TREE_FAR);
+        float tCell = 0.0;
+        for (int i = 0; i < 30; i++) {
+            if (tCell > tLimit) break;
+            vec4 f = texture2D(uTrees, (mod(cell, 16.0) + 0.5) / 16.0);
+            if (f.a > 0.5) {
+                vec2 c = (cell + 0.5) * TC + (f.rg - 0.5) * 3.0;
+                float v = floor(f.b * 255.0 / 25.0 + 0.5);
+                float sz = 0.85 + (f.a - 0.5) * 0.7;
+                vec4 A, B;
+                vec3 leaf, bark;
+                treeParams(v, A, B, leaf, bark);
+                vec4 hm = texture2D(uHeight, c / 256.0) * HMAX;
+                float baseY = (hm.b - hm.g > 0.4) ? hm.b : hm.r;
+                float Rb = A.z * 1.3 * sz;
+                vec2 oc = ro.xz - c;
+                float a2 = dot(dir, dir), b2 = dot(oc, dir), c2 = dot(oc, oc) - Rb * Rb;
+                float disc = b2 * b2 - a2 * c2;
+                if (disc > 0.0 && a2 > 1e-8) {
+                    float sq = sqrt(disc);
+                    float ta = (-b2 - sq) / a2, tb = (-b2 + sq) / a2;
+                    float y0 = baseY - 0.3, y1 = baseY + B.z * sz + 0.6;
+                    if (abs(d.y) > 1e-5) {
+                        float s0 = (y0 - ro.y) / d.y, s1 = (y1 - ro.y) / d.y;
+                        ta = max(ta, min(s0, s1));
+                        tb = min(tb, max(s0, s1));
+                    }
+                    ta = max(ta, 0.02);
+                    tb = min(tb, tLimit);
+                    if (tb > ta) {
+                        float seed = floor(mod(cell.x, 16.0)) * 16.0 + floor(mod(cell.y, 16.0));
+                        vec3 base = vec3(c.x, baseY, c.y);
+                        float part;
+                        float th = traceTree(ro, d, base, sz, A, B, seed, ta, tb, part);
+                        if (th > 0.0) {
+                            vec3 q = (ro + d * th - base) / sz;
+                            float pp;
+                            float e3 = 0.06;
+                            float s0 = treeSDF(q, A, B, seed, pp);
+                            vec3 tn = normalize(vec3(treeSDF(q + vec3(e3, 0.0, 0.0), A, B, seed, pp) - s0,
+                                                     treeSDF(q + vec3(0.0, e3, 0.0), A, B, seed, pp) - s0,
+                                                     treeSDF(q + vec3(0.0, 0.0, e3), A, B, seed, pp) - s0));
+                            vec3 alb;
+                            if (part > 0.5) {
+                                float lh = hash3(floor(q * 6.0 + seed));
+                                float topK = clamp((q.y - (A.w - A.z)) / (2.0 * A.z + 0.01), 0.0, 1.0);
+                                if (B.x > 0.5 && B.x < 1.5) topK = clamp(q.y / B.z, 0.0, 1.0);
+                                alb = leaf * (0.65 + 0.55 * topK) * (0.80 + 0.40 * lh);
+                                alb *= 0.75 + 0.25 * smoothstep(-1.5, 0.0, s0);              // darker deep inside
+                                if (v > 6.5 && v < 7.5 && lh > 0.85) alb = vec3(0.98, 0.92, 0.95);   // white blossom
+                                if (v > 5.5 && v < 6.5 && lh > 0.7) alb = vec3(0.85, 0.55, 0.12);    // golden leaves
+                                tn = normalize(tn + (vec3(hash3(floor(q * 6.0) + 1.0), hash3(floor(q * 6.0) + 2.0), hash3(floor(q * 6.0) + 3.0)) - 0.5) * 0.9);
+                            } else {
+                                float ang = atan(q.z, q.x);
+                                float g = vnoise(vec2(ang * 3.0, q.y * 8.0) + seed);
+                                alb = bark * (0.75 + 0.35 * g);
+                                if (v > 0.5 && v < 1.5 && hash(floor(vec2(ang * 2.0, q.y * 4.0))) > 0.72) alb = vec3(0.12, 0.11, 0.10);  // birch marks
+                            }
+                            float sr = clamp(0.78 + 1.15 * (dot(tn, uSunDir) - max(uSunDir.y, 0.05)), 0.25, 1.45);
+                            vec3 tl = uAmbient * mix(1.0, sr, uSunVis);
+                            float tdark = clamp(1.0 - (1.0 - uStars * 0.85), 0.0, 1.0);
+                            tl += vec3(1.0, 0.70, 0.40) * 1.6 / (1.0 + th * th * 0.09) * max(dot(tn, -d), 0.25) * tdark;
+                            vec3 tc = alb * tl;
+                            tc = mix(tc, uFogCol, 1.0 - exp(-th * uFog));
+                            col = tc + uFlash * vec3(0.55, 0.60, 0.75) * 0.4;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (tMax.x < tMax.y) { tCell = tMax.x; tMax.x += tDel.x; cell.x += sgn.x; }
+            else { tCell = tMax.y; tMax.y += tDel.y; cell.y += sgn.y; }
+        }
+    }
 
     // ---- rain streaks (screen space, slanted by wind); none inside caves
     if (uRain > 0.001) {

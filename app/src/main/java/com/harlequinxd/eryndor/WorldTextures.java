@@ -23,6 +23,42 @@ final class WorldTextures {
     private static int[] groundCache, cloudCache;
     static final float DETAIL_MAX = 3f;             // metres represented by 8-bit 255
     private static byte[] detailCache;
+    // ---- trees: one optional tree per 16 m cell (the shader draws them per pixel)
+    static final int TREE_GRID = 16;
+    static final float TREE_CELL = WORLD_SIZE / TREE_GRID;
+    static final String[] TREE_NAMES = {"oak", "birch", "scots pine", "spruce", "willow", "dead tree",
+            "autumn maple", "blossom", "ancient yew", "poplar"};
+    // per species: crown radius, trunk radius, crown centre height, top (match treeParams in scene.frag)
+    static final float[] TREE_CROWN = {4.2f, 2.0f, 2.9f, 2.3f, 3.9f, 3.2f, 3.4f, 2.9f, 4.0f, 1.5f};
+    static final float[] TREE_TRUNK = {0.38f, 0.16f, 0.26f, 0.24f, 0.38f, 0.26f, 0.30f, 0.22f, 0.60f, 0.20f};
+    static final float[] TREE_TOP = {10f, 10.4f, 11.5f, 13.5f, 9.5f, 9f, 9.2f, 7.4f, 6.4f, 14f};
+    private static byte[] treeCache;
+
+    /** Tree placement: per cell RGBA = offset x, offset z, species * 25, presence (a >= 128) + size. */
+    static synchronized byte[] trees() {
+        if (treeCache == null) {
+            groundCache = null;
+            ground();
+        }
+        return treeCache;
+    }
+
+    /** Trunk radius (scaled) and world position of the tree in the cell containing (x, z), or null. */
+    static float[] trunkNear(double x, double z) {
+        byte[] t = treeCache;
+        if (t == null) return null;
+        int cx = Math.floorMod((int) Math.floor(x / TREE_CELL), TREE_GRID), cz = Math.floorMod((int) Math.floor(z / TREE_CELL), TREE_GRID);
+        int o = (cz * TREE_GRID + cx) * 4;
+        int a = t[o + 3] & 255;
+        if (a < 128) return null;
+        double baseX = Math.floor(x / TREE_CELL) * TREE_CELL, baseZ = Math.floor(z / TREE_CELL) * TREE_CELL;
+        float tx = (float) (baseX + TREE_CELL * 0.5 + ((t[o] & 255) / 255f - 0.5f) * 3f);
+        float tz = (float) (baseZ + TREE_CELL * 0.5 + ((t[o + 1] & 255) / 255f - 0.5f) * 3f);
+        int v = Math.round((t[o + 2] & 255) / 25f);
+        float sz = 0.85f + ((a / 255f) - 0.5f) * 0.7f;
+        return new float[]{tx, tz, TREE_TRUNK[Math.min(9, v)] * sz * 1.7f};
+    }
+
     static final int FERN_GRID = 64;                 // 64 x 64 cells of 4 m over the 256 m tile
     static final float FERN_CELL = WORLD_SIZE / FERN_GRID;
     private static byte[] fernCache;
@@ -52,7 +88,7 @@ final class WorldTextures {
 
     /** Material id per ground texel (id * 40), matching the ground texture. */
     static synchronized byte[] materials() {
-        if (matCache == null) {
+        if (matCache == null || treeCache == null) {
             groundCache = null;
             ground();
         }
@@ -65,7 +101,7 @@ final class WorldTextures {
 
     /** Detail heights (8-bit, 0..DETAIL_MAX metres) matching the ground texture texel for texel. */
     static synchronized byte[] detail() {
-        if (detailCache == null || fernCache == null || matCache == null) {
+        if (detailCache == null || fernCache == null || matCache == null || treeCache == null) {
             groundCache = null;
             ground();
         }
@@ -73,7 +109,8 @@ final class WorldTextures {
     }
 
     /** Use previously cached ground + detail data. */
-    static synchronized void setCached(int[] g, byte[] d, byte[] f, byte[] m) {
+    static synchronized void setCached(int[] g, byte[] d, byte[] f, byte[] m, byte[] tr) {
+        treeCache = tr;
         groundCache = g;
         detailCache = d;
         fernCache = f;
@@ -726,6 +763,52 @@ final class WorldTextures {
                 fernCache[o + 3] = (byte) (present ? 128 + Math.round(rot * 127) : 0);
                 if (present) fernShadow(R, G, B, px, pz, (0.8f + 0.7f * size) * PPM);
             }
+        Loading.set("Growing the trees", 0.795f);
+        buildHeights();
+        PNoise grove = new PNoise(5, rnd), conifer = new PNoise(4, rnd);
+        treeCache = new byte[TREE_GRID * TREE_GRID * 4];
+        int[] count = new int[10];
+        for (int cz = 0; cz < TREE_GRID; cz++)
+            for (int cx = 0; cx < TREE_GRID; cx++) {
+                float ox = rnd.nextFloat(), oz = rnd.nextFloat(), size = rnd.nextFloat(), pick = rnd.nextFloat();
+                float wx = (cx + 0.5f) * TREE_CELL + (ox - 0.5f) * 3f, wz = (cz + 0.5f) * TREE_CELL + (oz - 0.5f) * 3f;
+                int px = (int) (wx * PPM), pz = (int) (wz * PPM);
+                boolean clear = true;
+                for (int k = -20; k <= 20 && clear; k += 4)
+                    for (int j = -20; j <= 20 && clear; j += 4)
+                        if (busy[Math.floorMod(pz + k, S) * S + Math.floorMod(px + j, S)] != 0) clear = false;
+                if (sample(hTop, wx, wz) - sample(hCeil, wx, wz) > 0.5f) clear = false;   // not on the cave roof
+                float g = grove.at(wx / WORLD_SIZE, wz / WORLD_SIZE);
+                float chance = g > 0.55f ? 0.85f : 0.28f;
+                boolean present = clear && rnd.nextFloat() < chance;
+                float riverD = Math.abs(wrapD(wz, riverZ(wx)));
+                int v;
+                if (riverD < 15f && pick < 0.6f) v = 4;                                   // willows by the water
+                else if (g > 0.55f && conifer.at(wx / WORLD_SIZE, wz / WORLD_SIZE) > 0.5f) v = pick < 0.5f ? 2 : 3;   // pine wood
+                else if (g > 0.55f) v = pick < 0.45f ? 0 : (pick < 0.7f ? 1 : (pick < 0.85f ? 6 : 8));               // broadleaf grove
+                else v = (int) (pick * 10f) % 10;                                         // anything, scattered
+                if (present) count[v]++;
+                int o = (cz * TREE_GRID + cx) * 4;
+                treeCache[o] = (byte) Math.round(ox * 255);
+                treeCache[o + 1] = (byte) Math.round(oz * 255);
+                treeCache[o + 2] = (byte) (v * 25);
+                treeCache[o + 3] = (byte) (present ? 128 + Math.round(size * 127) : 0);
+                if (present) {
+                    float sz = 0.85f + (size) * 0.35f;
+                    treeShadow(R, G, B, px, pz, TREE_CROWN[v] * sz * PPM, TREE_TOP[v] * sz * PPM, TREE_TRUNK[v] * sz * PPM, v == 5);
+                }
+            }
+        // guarantee every species appears at least once
+        for (int v = 0; v < 10; v++) {
+            if (count[v] > 0) continue;
+            for (int o = 0; o < treeCache.length; o += 4)
+                if ((treeCache[o + 3] & 255) >= 128 && count[Math.round((treeCache[o + 2] & 255) / 25f)] > 1) {
+                    count[Math.round((treeCache[o + 2] & 255) / 25f)]--;
+                    treeCache[o + 2] = (byte) (v * 25);
+                    count[v]++;
+                    break;
+                }
+        }
         Loading.set("Finishing the textures", 0.80f);
 
         int[] out = new int[S * S];
@@ -831,6 +914,27 @@ final class WorldTextures {
                     float prof = (float) Math.sqrt(Math.max(0f, 1f - (d / er) * (d / er)));
                     raise(i, (0.35f + rad / PPM * 0.55f) * prof * 0.55f);
                 }
+            }
+    }
+
+    /** Baked tree shadow: dappled crown shadow cast to the south-east plus a trunk streak. */
+    private static void treeShadow(float[] R, float[] G, float[] B, int cx, int cy, float crown, float top, float trunk, boolean bare) {
+        final int S = GROUND_SIZE;
+        float off = top * 0.35f;
+        int ext = (int) (crown * 1.3f + off) + 4;
+        for (int dy = -ext; dy <= ext; dy++)
+            for (int dx = -ext; dx <= ext; dx++) {
+                int x = Math.floorMod(cx + dx, S), y = Math.floorMod(cy + dy, S), i = y * S + x;
+                float sx = dx - off * 0.75f, sy = dy - off * 0.6f;
+                float dc = (float) Math.sqrt(sx * sx + sy * sy) / crown;
+                float k = 0f;
+                if (!bare && dc < 1.15f) k = smooth(1.15f, 0.5f, dc) * (0.75f + 0.25f * hash(x * 5, y * 3)) * 0.55f;
+                // trunk streak from the foot of the tree toward the crown shadow
+                float tl = Math.max(0f, Math.min(1f, (dx * 0.75f + dy * 0.6f) / (off + 0.01f)));
+                float ex = dx - off * 0.75f * tl, ey = dy - off * 0.6f * tl;
+                if (Math.sqrt(ex * ex + ey * ey) < trunk * 1.2f && tl > 0f && tl < 1f) k = Math.max(k, 0.5f);
+                if (bare && dc < 0.9f && hash(x * 3, y * 7) > 0.75f) k = Math.max(k, 0.25f);
+                if (k > 0f) { float sh = 1f - k; R[i] *= sh; G[i] *= sh; B[i] *= sh; }
             }
     }
 

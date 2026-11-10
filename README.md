@@ -20,6 +20,12 @@ Hollowspire.
   every grass blade has its own height. **Ferns are 3D**: an implicit shape (fronds that rise,
   arch and droop, leaflets with gaps, air underneath) tested by each pixel's ray; no meshes, no
   voxel grid.
+- **Trees (10 species, per pixel)**: oak, silver birch, Scots pine, spruce, willow, dead tree,
+  autumn maple, blossom, ancient yew and poplar. Each is an implicit shape (trunk with root flare
+  plus a crown of clustered spheres, tiered cone, ellipsoid, willow dome with hanging curtains, or
+  bare branches) with lumpy, gapped foliage computed per pixel; no meshes. Rays walk the 16 m tree
+  cells they cross, nearest first, and stop at the terrain. Trees grow in groves (broadleaf or
+  pine wood), willows by the river, others scattered; baked shadows; solid trunks.
 - **Per-pixel normal mapping**: every material has a tiny height field (grass blade streaks,
   earth grains and pebbles, stone pitting and hairline cracks, wood grain, water ripples). Each
   pixel derives its normal from it with differences sized to its footprint on the ground, adds the
