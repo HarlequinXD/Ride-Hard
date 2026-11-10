@@ -20,7 +20,7 @@ final class Voxels {
     static final int NX = 512, NY = 96, NZ = 512;
     static final float CELL = 0.5f;                 // metres
     static final float RANGE = 4f;                  // distances are clamped to +-4 m
-    static final int CACHE_VERSION = 1;
+    static final int CACHE_VERSION = 3;
 
     /** Signed distances (as uploaded), x fastest, then y, then z. */
     private static byte[] sdf;
@@ -47,7 +47,7 @@ final class Voxels {
     private static Tunnel[] makeTunnels() {
         java.util.ArrayList<Tunnel> list = new java.util.ArrayList<>();
         // Hollow Hill: from the mouth, winding down into the hill
-        float mouth = WorldTextures.terrainAt(Cave.PATH[0][0], Cave.PATH[0][1]) - 0.4f;
+        float mouth = WorldTextures.terrainAt(Cave.PATH[0][0], Cave.PATH[0][1]);    // floor meets the ground
         float[][] hp = new float[Cave.PATH.length][];
         float s = 0f;
         for (int i = 0; i < Cave.PATH.length; i++) {
@@ -57,7 +57,7 @@ final class Voxels {
             }
             hp[i] = new float[]{Cave.PATH[i][0], mouth - 0.05f * s, Cave.PATH[i][1]};
         }
-        list.add(new Tunnel(hp, 2.6f, 3.6f));
+        list.add(new Tunnel(withRamps(hp, true, false), 2.6f, 3.6f));
 
         // a tunnel straight through each ridge, portals on open ground either side, floor graded
         // between them (the ridges are raised for this in WorldTextures.terrain)
@@ -66,7 +66,7 @@ final class Voxels {
             float ca = (float) Math.cos(r[2]), sa = (float) Math.sin(r[2]);
             float half = WorldTextures.RIDGE_HALF_WIDTH * 2.3f;
             float ax = r[0] - ca * half, az = r[1] - sa * half, cx = r[0] + ca * half, cz = r[1] + sa * half;
-            float fa = WorldTextures.terrainAt(ax, az) - 0.3f, fc = WorldTextures.terrainAt(cx, cz) - 0.3f;
+            float fa = WorldTextures.terrainAt(ax, az), fc = WorldTextures.terrainAt(cx, cz);   // floors meet the ground
             int seg = 8;
             float[][] p = new float[seg + 1][];
             float side = (rnd.nextFloat() - 0.5f) * 5f;
@@ -75,9 +75,27 @@ final class Voxels {
                 float bend = (float) Math.sin(t * Math.PI) * side;     // a gentle curve
                 p[i] = new float[]{ax + (cx - ax) * t - sa * bend, fa + (fc - fa) * t, az + (cz - az) * t + ca * bend};
             }
-            list.add(new Tunnel(p, 2.5f + rnd.nextFloat() * 0.7f, 3.6f + rnd.nextFloat() * 0.8f));
+            list.add(new Tunnel(withRamps(p, true, true), 2.5f + rnd.nextFloat() * 0.7f, 3.6f + rnd.nextFloat() * 0.8f));
         }
         return list.toArray(new Tunnel[0]);
+    }
+
+    /**
+     * Run a tunnel a few metres on past its portals as a ramp that follows the ground, so the floor
+     * meets the hillside smoothly instead of ending in a lip at the bore's rounded end.
+     */
+    private static float[][] withRamps(float[][] p, boolean start, boolean end) {
+        java.util.ArrayList<float[]> out = new java.util.ArrayList<>();
+        if (start) out.add(ramp(p[0], p[1]));
+        java.util.Collections.addAll(out, p);
+        if (end) out.add(ramp(p[p.length - 1], p[p.length - 2]));
+        return out.toArray(new float[0][]);
+    }
+
+    private static float[] ramp(float[] portal, float[] inner) {
+        float dx = portal[0] - inner[0], dz = portal[2] - inner[2], l = (float) Math.hypot(dx, dz);
+        float x = portal[0] + dx / l * 4.5f, z = portal[2] + dz / l * 4.5f;
+        return new float[]{x, WorldTextures.terrainAt(x, z), z};
     }
 
     /** Signed distance to the air of one tunnel (negative inside): a rounded bore with a flat floor. */

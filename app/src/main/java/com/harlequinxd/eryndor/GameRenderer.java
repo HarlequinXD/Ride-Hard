@@ -29,11 +29,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private static final int LOW_RES_LINES = 240;           // PS1 resolution: 240 lines, width follows the screen
     private static final float FOV_Y = (float) Math.toRadians(68);
     private static final float EYE_HEIGHT = 1.68f;
-    private static final float MAX_SLOPE = 1.1f;       // rise per metre the player can climb
+    private static final float MAX_STEP_UP = 0.55f;     // tallest step the player climbs without jumping
     private static final float MIN_HEADROOM = 1.95f;
     private static final float WALK_SPEED = 4.2f;      // m/s at full stick
     private static final float LOOK_SENS = 0.0065f;    // radians per dp
-    private static final int GROUND_CACHE_VERSION = 14;
+    private static final int GROUND_CACHE_VERSION = 16;
 
     private final Input input;
     private final SkyState sky;
@@ -75,7 +75,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private java.nio.ByteBuffer volData;
     // ground texture sets, one array layer each (order = layer index in scene.frag):
     // colour, and normal map + height packed together; tiling, point sampled
-    static final String[] SURFACES = {"grass", "cobble"};
+    static final String[] SURFACES = {"grass", "cobble", "dirt", "rock", "forest", "gravel", "sand", "snow",
+            "moss", "needles", "roots", "mud", "forestgrass", "cliff", "mossyrock"};
     private int surfColTex, surfNHTex;
     private int[][] surfCol, surfNH;
     private int surfSize;
@@ -587,7 +588,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         float top = WorldTextures.floorAt(x, z);
         double from = Float.isNaN(eyeY) ? top + 1.0 : eyeY - EYE_HEIGHT + 0.7;
         float f = Voxels.floorBelow(x, from, z);
-        if (f > top - 0.8f) f = Math.max(f, top) + WorldTextures.detailAt(x, z);
+        if (Math.abs(f - top) < 0.3f) f = Math.max(f, top) + WorldTextures.detailAt(x, z);   // on the open-air ground
         return f;
     }
 
@@ -600,7 +601,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         double ax = px + mx / len * 0.35, az = pz + mz / len * 0.35;
         float here = groundAt(px, pz);
         float ahead = groundAt(ax, az);
-        if ((ahead - here) / 0.35f > MAX_SLOPE) return;
+        // step up anything up to a stair's height (tunnel lips, rocks, banks); taller is a wall
+        if (ahead - here > MAX_STEP_UP) return;
         float ceil = Voxels.ceilingAbove(ax, ahead + 0.3, az);
         if (ceil - ahead < MIN_HEADROOM) return;
         float[] tr = WorldTextures.trunkNear(ax, az);           // tree trunks are solid

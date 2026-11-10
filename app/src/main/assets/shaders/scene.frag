@@ -91,7 +91,7 @@ vec3 volNormal(vec3 p, float e) {
 // how much the 2D surface detail applies here: on the open-air ground surface, not in tunnels
 float topWeight(vec3 p) {
     float top = texture(uHeight, p.xz / 256.0).r * HMAX;
-    return smoothstep(-1.6, -0.5, p.y - top);
+    return smoothstep(-0.7, -0.3, p.y - top);
 }
 
 float hash(vec2 p) {
@@ -275,22 +275,43 @@ vec3 pbr(vec3 albD, vec3 n, vec3 v, float rough, float metal, float sunLit, floa
 
 // ---- per-pixel grass: individual blades computed at the exact point each ray reaches
 const float GFAR = 12.0;
-// ---- ground texture sets (picked by the terrain mask), tiling and point sampled.
-//      Grass: two placements (the second turned 90 degrees and larger) picked per pixel by a
-//      dithered noise so the tile doesn't repeat visibly. Cobblestones: one placement, so the rows
-//      of stones stay straight.
-const float GRASS_TILE = 1.25, GRASS_TILE2 = 1.7, COBBLE_TILE = 1.6;
+// ---- ground texture sets (picked by the terrain mask), tiling and point sampled. Layers:
+//      0 grass, 1 cobblestone, 2 dirt, 3 cave rock, 4 forest floor, 5 gravel, 6 sand, 7 snow,
+//      8 moss, 9 pine needles, 10 roots, 11 mud, 12 forest grass, 13 cliff, 14 mossy rock.
+//      Most use two placements (the second turned 90 degrees and larger) picked per pixel by a
+//      dithered noise so the tile doesn't repeat visibly; cobblestones use one, so rows stay straight.
+const float SURF_TILE[15] = float[15](1.25, 1.6, 1.5, 2.5, 1.6, 1.0, 2.0, 2.5,
+                                      1.4, 1.3, 2.2, 1.8, 1.3, 4.0, 2.2);           // metres per tile
+const float SURF_DEPTH[15] = float[15](0.035, 0.06, 0.02, 0.05, 0.03, 0.03, 0.015, 0.02,
+                                       0.03, 0.025, 0.06, 0.03, 0.035, 0.08, 0.05);  // relief (m)
 const float LINES = 240.0;              // screen lines rendered (PS1 resolution)
 const float SURF_FAR = 14.0;            // texture height is traced this far
-const float GRASS_DEPTH = 0.035;        // height map white = this many metres of relief
-const float COBBLE_DEPTH = 0.06;
+const float MAT_STEP = 16.0;            // material ids are stored as id * 16 in uMat
+
+// material id (terrain mask) -> texture layer, or -1 for the made-up surfaces (wood, water)
+int surfLayer(float mid) {
+    int m = int(mid + 0.5);
+    if (m == 0) return 0;              // grass
+    if (m == 1) return 2;              // earth -> dirt
+    if (m == 2) return 1;              // stone -> cobblestone
+    if (m == 5 || m == 7) return 4;    // plants, forest floor -> leaf litter
+    if (m == 6) return 3;              // rock
+    if (m == 8) return 5;              // gravel
+    if (m == 9) return 6;              // sand
+    if (m == 10) return 7;             // snow
+    if (m >= 11 && m <= 15) return m - 3;   // moss, pine needles, roots, mud, forest grass
+    return -1;
+}
+
+float matAt(vec2 xz) { return floor(texture(uMat, xz / 256.0).r * 255.0 / MAT_STEP + 0.5); }
 
 vec2 surfUV(int layer, vec2 xz, out float turned) {
     turned = 0.0;
-    if (layer == 1) return xz / COBBLE_TILE;
-    float k = vnoise(xz * 0.31 + 11.0) + (bayer4(gl_FragCoord.xy) - 0.5) * 0.22;
+    float tile = SURF_TILE[layer];
+    if (layer == 1) return xz / tile;
+    float k = vnoise(xz * 0.31 + 11.0 + float(layer) * 3.7) + (bayer4(gl_FragCoord.xy) - 0.5) * 0.22;
     turned = step(0.5, k);
-    return turned > 0.5 ? vec2(-xz.y, xz.x) / GRASS_TILE2 + vec2(0.37, 0.61) : xz / GRASS_TILE;
+    return turned > 0.5 ? vec2(-xz.y, xz.x) / (tile * 1.36) + vec2(0.37, 0.61) : xz / tile;
 }
 
 float surfLod(float t, float tile) {   // texture level for one screen pixel at distance t
@@ -300,14 +321,12 @@ float surfLod(float t, float tile) {   // texture level for one screen pixel at 
 // per-pixel relief from the texture set's height map (cobbles bulge out of the mortar, grass clumps
 // rise), only where the terrain mask picked a textured surface
 float surfHeight(vec2 xz, float t) {
-    float mid = floor(texture(uMat, xz / 256.0).r * 255.0 / 40.0 + 0.5);
-    int layer = mid < 0.5 ? 0 : (mid > 1.5 && mid < 2.5 ? 1 : -1);
+    int layer = surfLayer(matAt(xz));
     if (layer < 0) return 0.0;
     float turned;
     vec2 uv = surfUV(layer, xz, turned);
-    float tile = layer == 1 ? COBBLE_TILE : GRASS_TILE;
-    float h = textureLod(uSurfNH, vec3(uv, float(layer)), surfLod(t, tile)).b;
-    return h * (layer == 1 ? COBBLE_DEPTH : GRASS_DEPTH) * smoothstep(SURF_FAR, SURF_FAR * 0.5, t);
+    float h = textureLod(uSurfNH, vec3(uv, float(layer)), surfLod(t, SURF_TILE[layer])).b;
+    return h * SURF_DEPTH[layer] * smoothstep(SURF_FAR, SURF_FAR * 0.5, t);
 }
 
 // Self-shadowing of the texture relief (as in parallax occlusion mapping with shadows): march a
@@ -804,6 +823,27 @@ vec3 swordNormal(vec3 q) {
                    + k.yxy * swordSdf(q + k.yxy * e).x + k.xxx * swordSdf(q + k.xxx * e).x);
 }
 
+// Rock texture set wrapped onto any slope (walls, ceilings, tunnels, boulders): three planar
+// projections blended by the normal, with the normal maps combined the same way ("whiteout").
+vec3 rockTriplanar(vec3 p, vec3 n, float t, float layer, out vec3 nOut) {
+    vec3 w = pow(abs(n), vec3(4.0));
+    w /= (w.x + w.y + w.z);
+    float tile = SURF_TILE[int(layer)];
+    float lod = surfLod(t, tile);
+    vec3 cx = textureLod(uSurfCol, vec3(p.zy / tile, layer), lod).rgb;
+    vec3 cy = textureLod(uSurfCol, vec3(p.xz / tile, layer), lod).rgb;
+    vec3 cz = textureLod(uSurfCol, vec3(p.xy / tile, layer), lod).rgb;
+    vec2 ax = textureLod(uSurfNH, vec3(p.zy / tile, layer), lod).rg * 2.0 - 1.0;
+    vec2 ay = textureLod(uSurfNH, vec3(p.xz / tile, layer), lod).rg * 2.0 - 1.0;
+    vec2 az = textureLod(uSurfNH, vec3(p.xy / tile, layer), lod).rg * 2.0 - 1.0;
+    vec3 tx = vec3(ax + n.zy, abs(n.x) * sqrt(max(0.0, 1.0 - dot(ax, ax))));
+    vec3 ty = vec3(ay + n.xz, abs(n.y) * sqrt(max(0.0, 1.0 - dot(ay, ay))));
+    vec3 tz = vec3(az + n.xy, abs(n.z) * sqrt(max(0.0, 1.0 - dot(az, az))));
+    tx.z *= sign(n.x); ty.z *= sign(n.y); tz.z *= sign(n.z);
+    nOut = normalize(tx.zyx * w.x + ty.xzy * w.y + tz.xyz * w.z);
+    return cx * w.x + cy * w.y + cz * w.z;
+}
+
 float rockTex(vec3 p) {
     float n = vnoise(vec2(p.x + p.z, p.y) * 2.2) * 0.55 + vnoise(vec2(p.x - p.z, p.y * 3.0) * 5.0) * 0.30
             + hash(floor(vec2(p.x * 7.0 + p.z * 5.0, p.y * 8.0))) * 0.15;
@@ -845,7 +885,9 @@ void main() {
         prevT = t;
         float fine = 0.035 + t * 0.026;
         if (t < 4.0) fine = min(fine, 0.012 + t * 0.012);     // small texture relief near you
-        float st = tw > 0.0 ? min(max(dd * 0.85, 0.01 + t * 0.004), fine) : max(dd * 0.85, 0.02 + t * 0.006);
+        // never slower than a plain march (so grazing rays still reach the far hills); leap
+        // further when the volume says the air is clear
+        float st = tw > 0.0 ? min(max(dd * 0.85, 0.01 + t * 0.004), fine) : max(dd * 0.85, 0.035 + t * 0.026);
         t += st;
     }
     float kind = 0.0;                         // 0 ground or tunnel floor, 1 ceiling / overhang underside
@@ -887,7 +929,7 @@ void main() {
     steep = max(steep, useTop);                              // and everywhere underground
 
     // per-pixel material texture and bump
-    float mid = floor(texture(uMat, wp / 256.0).r * 255.0 / 40.0 + 0.5);
+    float mid = matAt(wp);
     vec2 bump;
     // point-sampled look: the fine surface detail is snapped to 3 cm texels like a texture would be
     vec2 wpT = (floor(wp * 32.0) + 0.5) / 32.0;
@@ -902,11 +944,11 @@ void main() {
     float mk = mf * (1.0 - steep * 0.7);
     // textured ground (the terrain mask picked grass or cobblestone here): the texture set's own
     // colour and normal map replace the made-up detail
-    int layer = mid < 0.5 ? 0 : (mid > 1.5 && mid < 2.5 ? 1 : -1);
+    int layer = surfLayer(mid);
     float isGrass = (layer >= 0 ? 1.0 : 0.0) * (1.0 - step(0.5, kind)) * (1.0 - useTop) * (1.0 - steep);
     vec3 grassAlb = vec3(0.0);
     if (isGrass > 0.5) {
-        float turned, glod = surfLod(T, layer == 1 ? COBBLE_TILE : GRASS_TILE);
+        float turned, glod = surfLod(T, SURF_TILE[layer]);
         vec2 guv = surfUV(layer, wp, turned);
         vec3 gc = textureLod(uSurfCol, vec3(guv, float(layer)), glod).rgb;
         vec2 tn = textureLod(uSurfNH, vec3(guv, float(layer)), glod).rg * 2.0 - 1.0;
@@ -953,10 +995,11 @@ void main() {
     light += lantern;
 
     vec3 albedo = isFern > 0.5 ? fcol * (0.85 + 0.3 * hash(floor(wp * 60.0))) : (isGrass > 0.5 ? grassAlb : gt.rgb * micro);
-    vec3 hpT = (floor(hp * 24.0) + 0.5) / 24.0;                       // rock texels, 4 cm
-    vec3 rock = vec3(0.47, 0.45, 0.42) * rockTex(hpT);
-    rock = mix(rock, vec3(0.30, 0.36, 0.20) * rockTex(hpT * 1.7), smoothstep(0.55, 0.85, n.y) * 0.5 * (1.0 - kind));
+    // cliffs, walls, ceilings, tunnels: the rock texture set wrapped from three sides
+    vec3 nRock;
+    vec3 rock = rockTriplanar(hp, nMacro, T, onTop > 0.5 ? 13.0 : 3.0, nRock) * 0.95;   // cliff outside, cave rock below
     albedo = mix(albedo, rock, steep);
+    n = normalize(mix(n, nRock, steep));
 
     // ---- physically based ground: roughness per material, wet ground gets darker and glossier
     float rough = mid < 0.5 ? 0.90 : (mid < 1.5 ? 0.92 : (mid < 2.5 ? 0.62 : (mid < 3.5 ? 0.80 : 0.85)));

@@ -83,16 +83,20 @@ final class WorldTextures {
     private static void raise(int i, float v) {
         if (DH != null && v > DH[i]) {
             DH[i] = v;
-            if (MAT != null) MAT[i] = (byte) (curMat * 40);
+            if (MAT != null) MAT[i] = (byte) (curMat * MAT_STEP);
         }
     }
 
     // material ids (shader picks the per-pixel surface texture from these)
-    static final int M_GRASS = 0, M_EARTH = 1, M_STONE = 2, M_WOOD = 3, M_WATER = 4, M_PLANT = 5;
+    static final int M_GRASS = 0, M_EARTH = 1, M_STONE = 2, M_WOOD = 3, M_WATER = 4, M_PLANT = 5,
+            M_ROCK = 6, M_FOREST = 7, M_GRAVEL = 8, M_SAND = 9, M_SNOW = 10,
+            M_MOSS = 11, M_NEEDLES = 12, M_ROOTS = 13, M_MUD = 14, M_FOREST_GRASS = 15;
+    /** Material ids are stored as id * MAT_STEP in the 8-bit material map (room for 16). */
+    static final int MAT_STEP = 16;
     private static byte[] MAT, matCache;
     private static int curMat = M_GRASS;
 
-    /** Material id per ground texel (id * 40), matching the ground texture. */
+    /** Material id per ground texel (id * MAT_STEP), matching the ground texture. */
     static synchronized byte[] materials() {
         if (matCache == null || treeCache == null) {
             groundCache = null;
@@ -269,7 +273,9 @@ final class WorldTextures {
 
     // ------------------------------------------------------------------ heightmap
     static final int HEIGHT_SIZE = 512;              // 0.5 m per sample
-    static final float HEIGHT_MAX = 48f;             // metres represented by 8-bit 255
+    static final float HEIGHT_MAX = 64f;             // metres represented by 8-bit 255
+    /** The whole land sits this high, leaving deep rock underneath for the tunnel network. */
+    static final float BASE = 16f;
     static final float WATER_LEVEL = 4f;
     static final float VILLAGE_H = 10f;
     static final float STONES_X = 36f, STONES_Z = 228f;
@@ -340,7 +346,7 @@ final class WorldTextures {
             float ends = 1f - smooth(RIDGE_HALF_LEN - 14f, RIDGE_HALF_LEN, Math.abs(alongR));
             h += RIDGE_H * prof * ends * (0.85f + 0.15f * (float) Math.cos(alongR * 0.21f));
         }
-        return Math.min(h, HEIGHT_MAX - 2f);
+        return Math.min(h + BASE, HEIGHT_MAX - 2f);
     }
 
     private static float terrainBase(float wx, float wz) {
@@ -677,7 +683,7 @@ final class WorldTextures {
                 if (paved || roadA > 0.5f || a < 1f) busy[i] = 1;
                 R[i] = r; G[i] = g; B[i] = b; A[i] = a;
                 DH[i] = dh;
-                MAT[i] = (byte) (mat * 40);
+                MAT[i] = (byte) (mat * MAT_STEP);
             }
         }
 

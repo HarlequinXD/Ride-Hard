@@ -63,6 +63,15 @@ Hollowspire.
   shadows, warm highlights), black point and vignette, driven by the time of day and weather:
   warm and rich at golden hour, neutral at noon, softer and cooler in grey weather, rain and mist,
   moonlit blue at night. Then back to dithered 15-bit colour.
+- **Landscape texture library** (placeholders made to be swapped): 15 tiling sets, each a colour
+  map, an OpenGL-style normal map and a height map (the height drives per-pixel relief and the
+  parallax self-shadowing): grass, cobblestone, dirt, cave rock, forest floor (leaf litter), gravel,
+  sand, snow, moss, pine needles, roots, mud, forest grass, cliff and mossy rock. Steep slopes in
+  the open wear the cliff face and tunnels the cave rock, both wrapped from three sides; the
+  terrain mask picks the rest (palette in `TerrainMask.java`). To swap one: put your colour,
+  normal and height images in `textures/landscape/` as `<name>_col.png`, `<name>_nrm.png`,
+  `<name>_hgt.png` and run `tools/build_surface.py <name> <col> <nrm> <hgt> app/src/main/assets/surfaces`
+  (or regenerate all placeholders with `tools/make_landscape_textures.py textures/landscape`).
 - **Terrain texture mask**: `app/src/main/assets/terrain/terrain_mask.png` (2048 x 2048, one
   pixel per 12.5 cm) is a painted colour map that picks the texture for each patch of ground.
   Colours snap to the nearest palette entry, so soft brushes work:
