@@ -8,9 +8,8 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Digging with the pickaxe. Every blow bites a rough scoop out of the voxel volume where it lands
  * and knocks loose a handful of dirt clods. The clods fly off the face, tumble, bounce and roll
- * under gravity against the real terrain, and where each one comes to rest it is added back to the
- * volume as a little more ground, so hitting the same spot again and again digs a hole and heaps a
- * pile of spoil beside it. Dug and heaped ground shows as bare dirt.
+ * under gravity against the real terrain, then crumble away: nothing is added back, so hitting the
+ * same spot again and again just digs the hole deeper. Dug ground shows as bare dirt.
  *
  * Changes are kept as a list of edits per 32 m chunk (the same grid as the streamed world), so
  * they are applied to the window as they happen and again whenever a chunk is regenerated.
@@ -28,7 +27,7 @@ final class Digging {
     static final int MAX_CLODS = 48;
 
     static final class Clod {
-        float x, y, z, vx, vy, vz, r, rest, age, share;
+        float x, y, z, vx, vy, vz, r, rest, age;
         int seed;
     }
 
@@ -87,8 +86,6 @@ final class Digging {
         addEdit(new float[]{cx, cy, cz, 0.70f, 0.17f + rnd.nextFloat() * 0.05f, rnd.nextInt(1 << 20)});
         // the loosened dirt: clods break off the face and fly out, mostly down and away
         int count = 5 + rnd.nextInt(5);
-        // the spoil: about what was cut out, a bit more as it lands loose, shared among the clods
-        float carved = 0.10f;
         for (int k = 0; k < count && clods.size() < MAX_CLODS; k++) {
             Clod c = new Clod();
             float jx = (rnd.nextFloat() - 0.5f) * 0.35f, jy = (rnd.nextFloat() - 0.5f) * 0.25f, jz = (rnd.nextFloat() - 0.5f) * 0.35f;
@@ -102,7 +99,6 @@ final class Digging {
             c.vx = n[0] * sp + (float) Math.cos(a) * side - dx * 0.8f;
             c.vy = n[1] * sp * 0.5f + 1.0f + rnd.nextFloat() * 1.6f;
             c.vz = n[2] * sp + (float) Math.sin(a) * side - dz * 0.8f;
-            c.share = carved * 2.0f / count;          // loose spoil bulks up
             c.r = 0.035f + rnd.nextFloat() * rnd.nextFloat() * 0.075f;
             c.seed = rnd.nextInt(1 << 20);
             clods.add(c);
@@ -161,12 +157,8 @@ final class Digging {
         }
     }
 
-    /** A clod comes to rest: the ground there grows by a little lump of loose dirt. */
+    /** A clod comes to rest and crumbles away: digging only takes ground away, it never adds any. */
     private static void settle(Clod c) {
-        // spread over a soft lump: volume ~ amount * pi R^2 * 0.4
-        float R = 0.75f;
-        float amt = -Math.min(0.12f, c.share / (0.4f * (float) Math.PI * R * R));
-        addEdit(new float[]{c.x, c.y - c.r * 0.6f, c.z, R, amt, c.seed});
     }
 
     // ------------------------------------------------------------------ edits

@@ -109,9 +109,9 @@ Hollowspire.
   rubbed clean). Left click / RT swings it: wind up, strike, recover (hold to keep digging). Where
   it lands (up to 3 m ahead, along your view) it bites a rough scoop out of the voxel ground, and
   5-9 clods of dirt break off and fly out of the bite. They tumble, bounce and roll against the
-  real terrain, and where each comes to rest it adds a lump of loose dirt to the ground, so hitting
-  one spot digs a hole with a spoil heap around it. Dug and heaped ground shows as bare earth. What
-  you dig is kept per chunk and comes back when you return. F / B puts the pickaxe away.
+  real terrain, then crumble away (no spoil heaps: digging only removes ground, so a hole just
+  gets deeper). Dug ground shows as bare earth. What you dig is kept per chunk and comes back
+  when you return. F / B puts the pickaxe away.
 - **Tree Builder** (button top-left): pick any of the 10 species and edit it with sliders in six
   tabs (Trunk, Branches, Sub-branches, Twigs, Leaves, Bark): height, bend, flare, branch count,
   angle, droop, twig density, leaf shape, size, count and colours, bark type and colour. The tree
