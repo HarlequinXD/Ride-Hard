@@ -151,6 +151,10 @@ public final class DesktopMain {
         });
         glfwShowWindow(window);
 
+        // testing: ERYNDOR_HOUR=21.5 sets the clock, ERYNDOR_WEATHER=n steps the weather n times
+        String hour = System.getenv("ERYNDOR_HOUR"), weather = System.getenv("ERYNDOR_WEATHER");
+        if (hour != null) sky.hour = Float.parseFloat(hour);
+        if (weather != null) for (int i = Integer.parseInt(weather); i > 0; i--) sky.requestNextWeather();
         renderer = new GameRenderer(input, sky, new AssetManager(), dataDir);
         renderer.onSurfaceCreated(null, null);
         overlay = new Overlay();

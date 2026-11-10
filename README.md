@@ -36,6 +36,13 @@ Hollowspire.
   relaxed hand that breathes and tightens as you walk. The arms bob with your steps and lag a
   little when you turn. Nothing is a mesh: each pixel's ray steps through the arm's volume.
   Rebuild the arm data with `tools/build_arms.py colour.png normal.png height.png out/`.
+- **Physically based rendering**: one shading function for the ground, trees, arms and sword:
+  Lambert diffuse plus Cook-Torrance specular (GGX, Smith/Schlick-GGX, Schlick Fresnel) from the
+  sun, the sky as hemisphere ambient and as a roughness-blurred reflection (split-sum with an
+  analytic environment BRDF), and the lantern as a light at the eye; linear-light maths with a
+  soft-shoulder tone map. Roughness per material (grass 0.9, cobbles 0.62, wet ground glossier),
+  metals take their colour as F0 (the sword's steel, the iron guard, brass bands, the arm plates
+  and buckles), and leaves and grass let light through from behind.
 - **Terrain texture mask**: `app/src/main/assets/terrain/terrain_mask.png` (2048 x 2048, one
   pixel per 12.5 cm) is a painted colour map that picks the texture for each patch of ground.
   Colours snap to the nearest palette entry, so soft brushes work:

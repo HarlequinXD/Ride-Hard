@@ -173,6 +173,68 @@ vec3 skyColor(vec3 d) {
     return sky;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Physically based shading. Lambert diffuse + Cook-Torrance specular (GGX distribution, Smith /
+// Schlick-GGX visibility, Schlick Fresnel) for the sun; the sky as hemisphere ambient light and as
+// a rough reflection (split-sum with an analytic environment BRDF); the player's lantern as a
+// light at the eye. Colours come in and go out in display space; the maths runs in linear light
+// and is tone mapped at the end. metal = 1 makes the albedo the specular colour (F0).
+const float PI = 3.14159265;
+const float SUN_E = 2.4;          // sun irradiance (linear), so full sun on flat ground ~ albedo
+const float SKY_E = 0.45;         // sky ambient irradiance factor
+vec3 toLin(vec3 c) { return c * c; }
+vec3 toDisp(vec3 c) { return sqrt(max(c, 0.0)); }
+
+vec3 tonemap(vec3 c) {            // linear up to 0.8, then a soft shoulder (no hard clipping)
+    vec3 over = max(c - 0.8, 0.0);
+    return min(c, 0.8) + 0.2 * (1.0 - exp(-over / 0.2));
+}
+
+// alb display albedo; n normal; v toward the eye; sunLit 0..1 (cloud, cast and self shadows);
+// open 0..1 sky openness (caves); ao ambient occlusion; lamp lantern strength at this point;
+// trans light passing through thin foliage from behind
+vec3 pbr(vec3 albD, vec3 n, vec3 v, float rough, float metal, float sunLit, float open, float ao, float lamp, float trans) {
+    vec3 alb = toLin(albD);
+    vec3 F0 = mix(vec3(0.04), alb, metal);
+    float r = clamp(rough, 0.04, 1.0);
+    float a = r * r, a2 = a * a;
+    float NdV = max(dot(n, v), 1e-3);
+    vec3 L = uSunDir;
+    vec3 H = normalize(L + v);
+    float NdL = max(dot(n, L), 0.0), NdH = max(dot(n, H), 0.0), VdH = max(dot(v, H), 0.0);
+    float dn = NdH * NdH * (a2 - 1.0) + 1.0;
+    float D = a2 / (PI * dn * dn);
+    float k = (r + 1.0) * (r + 1.0) / 8.0;
+    float G = NdV / (NdV * (1.0 - k) + k) * (NdL / (NdL * (1.0 - k) + k));
+    vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdH, 5.0);
+    vec3 spec = D * G * F / (4.0 * NdV * max(NdL, 1e-3));
+    vec3 kd = (1.0 - F) * (1.0 - metal);
+    vec3 sunRad = toLin(uSunCol) * SUN_E * uSunVis * sunLit * open;
+    vec3 col = (kd * alb / PI + spec) * sunRad * NdL;
+    col += trans * alb * sunRad * max(dot(-n, L), 0.0) * 0.35;                // through leaves and blades
+    // sky: diffuse from the hemisphere above, specular from the sky in the mirror direction
+    vec3 amb = toLin(uAmbient) * SKY_E * ao * mix(0.05, 1.0, open);
+    col += kd * alb * amb * (0.75 + 0.25 * n.y);
+    vec3 rd = reflect(-v, n);
+    vec3 env = toLin(skyColor(normalize(vec3(rd.x, max(rd.y, 0.02), rd.z))));
+    env = mix(env, amb * 1.6, r * r) * (rd.y < 0.0 ? 0.45 : 1.0) * ao * mix(0.03, 1.0, open);
+    vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022), c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 rr = r * c0 + c1;
+    float a004 = min(rr.x * rr.x, exp2(-9.28 * NdV)) * rr.x + rr.y;
+    vec2 AB = vec2(-1.04, 1.04) * a004 + rr.zw;
+    col += env * (F0 * AB.x + AB.y);
+    // lantern at the eye: light arrives along v
+    if (lamp > 0.0) {
+        vec3 lampRad = toLin(vec3(1.0, 0.70, 0.40)) * lamp;
+        float dl = NdV * NdV * (a2 - 1.0) + 1.0;
+        vec3 Fl = F0 + (1.0 - F0) * pow(1.0 - NdV, 5.0);
+        float Gl = NdV / (NdV * (1.0 - k) + k);
+        col += ((1.0 - Fl) * (1.0 - metal) * alb * max(NdV, 0.25) + a2 / (PI * dl * dl) * Gl * Gl * Fl / 4.0 * NdV) * lampRad;
+    }
+    return toDisp(tonemap(col));
+}
+
+
 // ---- per-pixel grass: individual blades computed at the exact point each ray reaches
 const float GFAR = 12.0;
 // ---- ground texture sets (picked by the terrain mask), tiling and point sampled.
@@ -407,7 +469,8 @@ float traceSpecies(int sp, vec3 ro, vec3 rd, float tmax, float tScale, out int h
                 if (abs(across) > 0.5) continue;
                 vec2 uv = vec2((B.w + along) / 8.0, across + 0.5);
                 float lod = log2(max(1.0, t * tScale * PIX * 128.0 / A.w));
-                if (textureLod(uLeafAtlas, uv, lod).a < 0.5) continue;
+                // dithered cut-out: keeps a sprig's coverage at every texture level (no bare trees far off)
+                if (textureLod(uLeafAtlas, uv, lod).a * (1.0 + 0.55 * lod) < 0.18 + 0.64 * bayer4(gl_FragCoord.xy)) continue;
                 best = t; hitPrim = pid; leafUv = uv;
             }
         }
@@ -779,8 +842,7 @@ void main() {
         vec3 gc = textureLod(uSurfCol, vec3(guv, float(layer)), glod).rgb;
         vec2 tn = textureLod(uSurfNH, vec3(guv, float(layer)), glod).rg * 2.0 - 1.0;
         // the photo's own colour (the terrain mask picked grass here); tree shadows from the ground alpha
-        float lit = clamp(gt.a * 2.0 - 1.0, 0.45, 1.0);
-        grassAlb = gc * 0.92 * lit;
+        grassAlb = gc * 0.92;
         vec2 wxz = turned > 0.5 ? vec2(-tn.y, -tn.x) : vec2(tn.x, -tn.y);
         float nz = sqrt(max(0.0, 1.0 - dot(tn, tn)));
         float gk = 1.0 - steep * 0.7;
@@ -816,8 +878,6 @@ void main() {
     float shadow = coverage(cloudField(uCloudO + (wp - ro.xz) + sOff));
     float sunRel = clamp(0.78 + 1.15 * (dot(n, uSunDir) - max(uSunDir.y, 0.05)), 0.25, 1.45);
     vec3 light = uAmbient * mix(1.0, sunRel, uSunVis) * (1.0 - 0.42 * shadow * uSunVis);
-    // crevices between cobbles and under grass clumps fall into the shade of their neighbours
-    if (isGrass > 0.5 && T < SURF_FAR) light *= 1.0 - 0.42 * (1.0 - surfShadow(wp, T)) * uSunVis * (1.0 - shadow * 0.6);
     light *= mix(0.05, 1.0, open);
     float dark = clamp(1.0 - open * (1.0 - uStars * 0.85), 0.0, 1.0);   // caves, and night outside
     vec3 lantern = vec3(1.0, 0.70, 0.40) * 1.6 / (1.0 + T * T * 0.09) * max(dot(n, -d), 0.25) * dark;
@@ -829,13 +889,20 @@ void main() {
     rock = mix(rock, vec3(0.30, 0.36, 0.20) * rockTex(hpT * 1.7), smoothstep(0.55, 0.85, n.y) * 0.5 * (1.0 - kind));
     albedo = mix(albedo, rock, steep);
 
-    vec3 land = albedo * light * mix(1.0, 0.62, uWet * open);
-    // soft specular glints: stone and wet ground catch the sun along the normal-mapped surface
-    vec3 hv = normalize(uSunDir - d);
-    float specK = (mid > 1.5 && mid < 2.5 ? 0.10 : 0.02) + 0.45 * uWet * open * (1.0 - isFern);
-    float spec = pow(max(dot(n, hv), 0.0), mid > 1.5 && mid < 2.5 ? 30.0 : 60.0) * specK;
-    land += uSunCol * spec * uSunVis * (1.0 - 0.42 * shadow) * open;
-    land += uSkyHor * uAmbient * 0.08 * uWet * open * pow(1.0 - min(-d.y * 4.0, 1.0), 3.0) * (1.0 - steep);
+    // ---- physically based ground: roughness per material, wet ground gets darker and glossier
+    float rough = mid < 0.5 ? 0.90 : (mid < 1.5 ? 0.92 : (mid < 2.5 ? 0.62 : (mid < 3.5 ? 0.80 : 0.85)));
+    rough = mix(rough, 0.75, steep);                                   // rock faces
+    if (isFern > 0.5) rough = 0.70;
+    float wetK = uWet * open * (1.0 - isFern);
+    rough = mix(rough, rough * 0.35, wetK);
+    float trans = (mid < 0.5 || mid > 4.5 || isFern > 0.5) ? 0.25 + 0.25 * isFern : 0.0;
+    float sunLit = 1.0 - 0.85 * shadow;                                // cloud shadow
+    if (isGrass > 0.5) {
+        sunLit *= clamp(gt.a * 2.0 - 1.0, 0.0, 1.0);                     // tree shadows on textured ground
+        if (T < SURF_FAR) sunLit *= surfShadow(wp, T);                   // self-shadowed relief
+    }
+    float lamp = 1.4 / (1.0 + T * T * 0.09) * dark;
+    vec3 land = pbr(albedo * mix(1.0, 0.70, wetK), n, -d, rough, 0.0, sunLit, open, 1.0, lamp, trans);
     float fres = 0.25 + 0.75 * pow(1.0 - min(max(-d.y, 0.0), 1.0), 5.0);
     vec3 wcol = mix(gt.rgb * light * 0.8, sky * 0.92 * mix(0.05, 1.0, open), fres);
     vec3 g = mix(land, wcol, water);
@@ -907,14 +974,12 @@ void main() {
             vec3 alb, tn;
             float isLeaf;
             shadeTree(bestSp, bestPid, bestUv, bestHl, bestRdl, bestYaw, alb, tn, isLeaf);
-            float sr = clamp(0.78 + 1.15 * (dot(tn, uSunDir) - max(uSunDir.y, 0.05)), 0.25, 1.45);
-            vec3 tl = uAmbient * mix(1.0, sr, uSunVis);
-            // sunlight glowing through leaves seen from the shaded side
-            tl += uSunCol * isLeaf * 0.45 * uSunVis * max(0.0, dot(d, uSunDir)) * step(dot(tn, uSunDir), 0.0);
-            tl *= 0.78 + 0.22 * clamp(bestHl.y / max(uTreeMeta[bestSp * 6 + 5].w, 1.0), 0.0, 1.0);   // a little darker low down
+            // physically based: bark rough, leaves a little glossy and translucent; darker low down
+            float tao = 0.70 + 0.30 * clamp(bestHl.y / max(uTreeMeta[bestSp * 6 + 5].w, 1.0), 0.0, 1.0);
             float tdark = clamp(uStars * 0.85, 0.0, 1.0);
-            tl += vec3(1.0, 0.70, 0.40) * 1.6 / (1.0 + bestT * bestT * 0.09) * max(dot(tn, -d), 0.25) * tdark;
-            vec3 tc = alb * tl;
+            float tlamp = 1.4 / (1.0 + bestT * bestT * 0.09) * tdark;
+            vec3 tnf = dot(tn, -d) < 0.0 && isLeaf > 0.5 ? -tn : tn;          // leaves are two-sided
+            vec3 tc = pbr(alb, tnf, -d, isLeaf > 0.5 ? 0.55 : 0.88, 0.0, tao, 1.0, tao, tlamp, isLeaf * 0.9);
             tc = mix(tc, uFogCol, 1.0 - exp(-bestT * uFog));
             col = tc + uFlash * vec3(0.55, 0.60, 0.75) * 0.4;
         }
@@ -947,36 +1012,29 @@ void main() {
             vec3 nw = vec3(nc.x, nc.y * cp - nc.z * sp, nc.y * sp + nc.z * cp);
             nw = vec3(nw.x * cy - nw.z * sy, nw.y, nw.x * sy + nw.z * cy);
             float sdark = clamp(1.0 - swordOpen * (1.0 - uStars * 0.85), 0.0, 1.0);
-            vec3 amb = uAmbient * mix(0.12, 1.0, swordOpen);
-            float ndl = max(dot(nw, uSunDir), 0.0) * uSunVis * swordOpen;
-            vec3 lamp = vec3(1.0, 0.70, 0.40) * 1.1 * max(dot(nw, -d), 0.2) * sdark;
-            vec3 hv = normalize(uSunDir - d);
-            float nh = max(dot(nw, hv), 0.0);
+            float slamp = 1.0 * sdark;
             // point-sampled wear: scratches and pits on 2.5 mm texels
             vec2 tq = floor(vec2(sq.x * 0.5 + sq.y, sq.z * 0.5));
             float wear = hash(tq) * 0.5 + hash(floor(tq / 6.0)) * 0.5;
             vec3 sc;
-            if (smat < 0.5) {                       // steel: mirror of the sky, fuller, bright bevels
+            if (smat < 0.5) {                       // polished steel: metallic, smooth; fuller duller
                 float w, th;
                 bladeSize(sq.z - SW_BLADE_S0, w, th);
                 float across = abs(sq.x) / max(w, 0.5);
                 float fuller = step(across, 0.20) * step(sq.z - SW_BLADE_S0, SW_BLADE_L * 0.72);
-                vec3 env = skyColor(reflect(d, nw)) * mix(0.10, 1.0, swordOpen);
-                vec3 steel = vec3(0.60, 0.62, 0.66) * (0.86 + 0.18 * wear);
-                sc = steel * (env * 0.75 + amb * 0.35 + uSunCol * ndl * 0.25 + lamp * 0.6);
-                sc *= mix(1.0, 0.55, fuller);
-                sc += mix(0.0, 0.10, smoothstep(0.80, 0.98, across)) * (amb + lamp);   // honed edge
-                sc += uSunCol * pow(nh, 70.0) * 1.6 * uSunVis * swordOpen + lamp * pow(max(dot(nw, -d), 0.0), 30.0) * 0.6;
-            } else if (smat < 1.5) {                // blackened iron with a brass rim
-                float brass = step(abs(abs(sq.x) - 60.0), 4.0);                 // brass bands near the tips
-                vec3 iron = mix(vec3(0.20, 0.19, 0.18), vec3(0.55, 0.42, 0.20), brass) * (0.8 + 0.4 * wear);
-                vec3 env = skyColor(reflect(d, nw)) * mix(0.10, 1.0, swordOpen);
-                sc = iron * (amb + uSunCol * ndl * 0.6 + lamp) + env * 0.12 + uSunCol * pow(nh, 40.0) * 0.5 * uSunVis * swordOpen;
+                float edge = smoothstep(0.80, 0.98, across);                    // honed edge: brightest
+                vec3 steel = vec3(0.78, 0.79, 0.81) * (0.90 + 0.12 * wear);
+                float rough = mix(0.22, 0.42, fuller) - 0.10 * edge + 0.06 * wear;
+                sc = pbr(steel * mix(1.0, 0.80, fuller), nw, -d, rough, 1.0, 1.0, swordOpen, 1.0, slamp, 0.0);
+            } else if (smat < 1.5) {                // blackened iron with brass bands
+                float brass = step(abs(abs(sq.x) - 60.0), 4.0);
+                vec3 metalC = mix(vec3(0.34, 0.33, 0.32), vec3(0.88, 0.68, 0.32), brass) * (0.85 + 0.3 * wear);
+                sc = pbr(metalC, nw, -d, mix(0.55, 0.32, brass), 1.0, 1.0, swordOpen, 1.0, slamp, 0.0);
             } else {                                // leather wrap, spiralling
                 float ang = atan(sq.y, sq.x) / 6.2832;
                 float band = fract(floor(sq.z * 0.5) / 9.0 + ang);
                 vec3 lea = vec3(0.30, 0.17, 0.09) * (0.75 + 0.35 * wear) * mix(0.55, 1.0, step(0.16, band));
-                sc = lea * (amb + uSunCol * ndl * 0.7 + lamp) + uSunCol * pow(nh, 18.0) * 0.06 * uSunVis * swordOpen;
+                sc = pbr(lea, nw, -d, 0.62, 0.0, 1.0, swordOpen, mix(0.6, 1.0, step(0.16, band)), slamp, 0.0);
             }
             col = sc;
         }
@@ -987,18 +1045,13 @@ void main() {
             vec3 nw = vec3(nc.x, nc.y * cp - nc.z * sp, nc.y * sp + nc.z * cp);
             nw = vec3(nw.x * cy - nw.z * sy, nw.y, nw.x * sy + nw.z * cy);
             float armOpen = texture(uHeight, uCam.xz / 256.0).a;
-            float sr = clamp(0.78 + 1.15 * (dot(nw, uSunDir) - max(uSunDir.y, 0.05)), 0.30, 1.35);
-            vec3 al = uAmbient * mix(1.0, sr, uSunVis) * mix(0.10, 1.0, armOpen);
-            al *= 0.85 + 0.25 * clamp(nw.y * 0.5 + 0.5, 0.0, 1.0);          // sky above, ground below
             float adark = clamp(1.0 - armOpen * (1.0 - uStars * 0.85), 0.0, 1.0);
-            vec3 lamp = vec3(1.0, 0.70, 0.40) * 1.1 * max(dot(nw, -d), 0.2) * adark;
-            // a small glint on the metal plates and buckles (bright, unsaturated texels)
-            vec3 hv = normalize(uSunDir - d);
+            // physically based: leather and skin, with the steel plates, studs and buckles metallic
+            // (bright, unsaturated texels)
             float lum = dot(alb, vec3(0.3, 0.59, 0.11));
             float sat = max(alb.r, max(alb.g, alb.b)) - min(alb.r, min(alb.g, alb.b));
             float metal = clamp(1.0 - 5.0 * sat, 0.0, 1.0) * smoothstep(0.18, 0.40, lum);
-            float spec = pow(max(dot(nw, hv), 0.0), 40.0) * (0.02 + 0.30 * metal) * uSunVis * armOpen;
-            col = alb * (al + lamp) + uSunCol * spec;
+            col = pbr(alb, nw, -d, mix(0.62, 0.38, metal), metal * 0.85, 1.0, armOpen, 1.0, 1.0 * adark, 0.0);
         }
     }
 
