@@ -80,6 +80,22 @@ final class GLUtil {
     }
 
     /** 3D RG8 volume (x, y, z), trilinear, wrapping in x and z, clamped in y. */
+    /** A clamped 3D data texture (the character's atlases): any format, linear or nearest. */
+    static int texture3D(ByteBuffer data, int w, int h, int d, int internal, int format, boolean linear) {
+        int[] t = new int[1];
+        GLES20.glGenTextures(1, t, 0);
+        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, t[0]);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES30.glTexImage3D(GLES30.GL_TEXTURE_3D, 0, internal, w, h, d, 0, format, GLES20.GL_UNSIGNED_BYTE, data);
+        int f = linear ? GLES20.GL_LINEAR : GLES20.GL_NEAREST;
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_MIN_FILTER, f);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_MAG_FILTER, f);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_WRAP_R, GLES20.GL_CLAMP_TO_EDGE);
+        return t[0];
+    }
+
     static int texture3D(ByteBuffer data, int w, int h, int d) {
         int[] t = new int[1];
         GLES20.glGenTextures(1, t, 0);

@@ -70,7 +70,16 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     volatile TreeLibrary library;
     private int treePrimTex, treeCellTex, treeIdxTex, leafAtlasTex, uploadedTreeVersion = -1;
     // first-person arms: colour / normal / height sheets (decoded off the GL thread)
-    private int armColTex, armNrmTex, armHgtTex;
+    // the third-person character: distance + texture-coordinate atlases, colour/normal/height atlas
+    private final Character character = new Character();
+    private int charDistTex, charUVTex, charAtlasTex;
+    private int[] charAtlasPx;
+    private int charAtlasW, charAtlasH;
+    /** Third-person view (V / LB switches to first person). */
+    volatile boolean thirdPerson = true;
+    private float charYaw = 0f, walkPhase, walkAmt;
+    private double lastPx = Double.NaN, lastPz;
+    private final float[] toolM = new float[12];
     // terrain volume (tunnels, caves, overhangs): 3D RG8, distance + sky openness
     private int volTex;
     // ground texture sets, one array layer each (order = layer index in scene.frag):
@@ -80,8 +89,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private int surfColTex, surfNHTex;
     private int[][] surfCol, surfNH;
     private int surfSize;
-    private int[][] armData;
-    private int[] armW = new int[3], armH = new int[3];
     private final ArmRig arms = new ArmRig();
     private final float[] treeMeta = new float[TreeLibrary.SLOTS * TreeLibrary.META * 4];
 
@@ -127,18 +134,18 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         streamer.lib = lib;
         Loading.set("Raising the land around you", 0.06f);
         streamer.loadAll(px, pz, 0.06f, 0.80f);
-        Loading.set("Shaping your arms", 0.825f);
-        String[] sheets = {"arms/arm_col.png", "arms/arm_nrm.png", "arms/arm_hgt.png"};
-        int[][] ad = new int[3][];
-        for (int i = 0; i < 3; i++) {
-            Bitmap b = readBitmap(sheets[i]);
-            armW[i] = b.getWidth();
-            armH[i] = b.getHeight();
-            ad[i] = new int[armW[i] * armH[i]];
-            b.getPixels(ad[i], 0, armW[i], 0, 0, armW[i], armH[i]);
-            b.recycle();
+        Loading.set("Shaping the wanderer", 0.825f);
+        try (InputStream rig = assets.open("character/rig.txt"); InputStream parts = assets.open("character/parts.bin.gz")) {
+            character.load(rig, parts);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("character data missing", e);
         }
-        armData = ad;
+        Bitmap ca = readBitmap("character/atlas.png");
+        charAtlasW = ca.getWidth();
+        charAtlasH = ca.getHeight();
+        charAtlasPx = new int[charAtlasW * charAtlasH];
+        ca.getPixels(charAtlasPx, 0, charAtlasW, 0, 0, charAtlasW, charAtlasH);
+        ca.recycle();
         int ns = SURFACES.length;
         int[][] sc = new int[ns][], sn = new int[ns][];
         for (int i = 0; i < ns; i++) {
@@ -175,10 +182,10 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         treeTex = GLUtil.cells(WorldTextures.treeWin, WorldTextures.TREE_GRID);
         cloudTex = GLUtil.texture(cloudData, WorldTextures.CLOUD_SIZE, false);
         leafAtlasTex = GLUtil.atlas(LeafAtlas.build(), LeafAtlas.W, LeafAtlas.H);
-        armColTex = GLUtil.atlas(armData[0], armW[0], armH[0]);
-        armNrmTex = GLUtil.atlas(armData[1], armW[1], armH[1]);
-        armHgtTex = GLUtil.atlas(armData[2], armW[2], armH[2], false);   // shape: stays smooth
-        armData = null;
+        charAtlasTex = GLUtil.atlas(charAtlasPx, charAtlasW, charAtlasH, false);
+        charAtlasPx = null;
+        charDistTex = GLUtil.texture3D(character.dist, character.ax, character.ay, character.az, GLES30.GL_R8, GLES30.GL_RED, true);
+        charUVTex = GLUtil.texture3D(character.uv, character.ax, character.ay, character.az, GLES30.GL_RGBA8, GLES20.GL_RGBA, false);
         surfColTex = GLUtil.textureArray(surfCol, surfSize);    // repeating, point sampled
         surfNHTex = GLUtil.textureArray(surfNH, surfSize);
         surfCol = surfNH = null;
@@ -312,11 +319,18 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             else input.consumeLook(look);
             if (input.swingHeld) arms.startSwing();
             arms.update(dt, look[0] * LOOK_SENS, -look[1] * LOOK_SENS, bobAmt, bobPhase);
-            if (arms.takeImpact() && !Float.isNaN(eyeY)) {               // the pickaxe comes down where you look
-                float cp = (float) Math.cos(pitch);
-                float dx = (float) Math.sin(yaw) * cp, dy = (float) Math.sin(pitch), dz = -(float) Math.cos(yaw) * cp;
-                if (Digging.strike(px, eyeY, pz, dx, dy, dz)) arms.bite();
+            if (arms.takeImpact() && !Float.isNaN(eyeY)) {
+                if (thirdPerson) {                                         // she brings it down ahead of her
+                    float a = -0.85f, cp = (float) Math.cos(a);
+                    float dx = (float) Math.sin(charYaw) * cp, dy = (float) Math.sin(a), dz = -(float) Math.cos(charYaw) * cp;
+                    if (Digging.strike(px, eyeY - EYE_HEIGHT + 1.35, pz, dx, dy, dz)) arms.bite();
+                } else {                                                   // the pickaxe comes down where you look
+                    float cp = (float) Math.cos(pitch);
+                    float dx = (float) Math.sin(yaw) * cp, dy = (float) Math.sin(pitch), dz = -(float) Math.cos(yaw) * cp;
+                    if (Digging.strike(px, eyeY, pz, dx, dy, dz)) arms.bite();
+                }
             }
+            animateCharacter(dt);
         } else input.consumeLook(look);
         Digging.update(dt);
         uploadDug();
@@ -360,6 +374,27 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         float camYaw = yaw, camPitch = pitch;
         double camX = px, camZ = pz;
         float camY = eyeY + bobAmt * (float) Math.sin(bobPhase) * 0.045f;
+        boolean third = thirdPerson && slot < 0 && !Float.isNaN(eyeY);
+        if (third) {
+            // behind and a little above her, over the right shoulder; pulled in where rock is in the way
+            double tx = px, ty = eyeY - EYE_HEIGHT + 1.55, tz = pz;
+            double cpt = Math.cos(pitch);
+            double fx = Math.sin(yaw) * cpt, fy = Math.sin(pitch), fz = -Math.cos(yaw) * cpt;
+            double rx = Math.cos(yaw), rz = Math.sin(yaw);
+            tx += rx * 0.38;
+            tz += rz * 0.38;
+            double want = 2.7, dist = 0.3;
+            while (dist < want) {
+                double qx = tx - fx * dist, qy = ty - fy * dist, qz = tz - fz * dist;
+                if (Voxels.distance(qx, qy, qz) < 0.3f) break;
+                dist += 0.1;
+            }
+            dist = Math.max(0.3, dist - 0.1);
+            camDist += (dist - camDist) * (dist < camDist ? 1f : Math.min(1f, dt * 4f));
+            camX = tx - fx * camDist;
+            camY = (float) (ty - fy * camDist);
+            camZ = tz - fz * camDist;
+        }
         float pvX = 0, pvY = 0, pvZ = 0;
         if (slot >= 0 && library != null) {
             float h = library.specs[slot].get(TreeSpec.HEIGHT);
@@ -391,9 +426,13 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(u(sceneProg, "uPitch"), camPitch);
         GLES20.glUniform4f(u(sceneProg, "uPreview"), pvX, pvY, pvZ, slot >= 0 ? slot : -1f);
         GLES20.glUniform1f(u(sceneProg, "uPreviewYaw"), previewYaw);
-        bindTex(11, armColTex, "uArmCol");
-        bindTex(12, armNrmTex, "uArmNrm");
-        bindTex(13, armHgtTex, "uArmHgt");
+        bindTex(11, charAtlasTex, "uCharAtlas");
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + 12);
+        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, charDistTex);
+        GLES20.glUniform1i(u(sceneProg, "uCharDist"), 12);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + 13);
+        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, charUVTex);
+        GLES20.glUniform1i(u(sceneProg, "uCharUV"), 13);
         bindTexArray(14, surfColTex, "uSurfCol");
         bindTexArray(15, surfNHTex, "uSurfNH");
         GLES20.glUniformMatrix3fv(u(sceneProg, "uArmRot"), 2, false, arms.rot, 0);
@@ -407,7 +446,22 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform4fv(u(sceneProg, "uClods"), Digging.MAX_CLODS, clodData, 0);
         GLES20.glUniform1i(u(sceneProg, "uClodN"), nClods);
         GLES20.glUniform1fv(u(sceneProg, "uFingK"), 10, arms.fingerK, 0);
-        GLES20.glUniform1f(u(sceneProg, "uArmShow"), slot < 0 ? 1f : 0f);
+        GLES20.glUniform1f(u(sceneProg, "uArmShow"), slot < 0 && !third ? 1f : 0f);
+        GLES20.glUniform1f(u(sceneProg, "uThird"), third ? 1f : 0f);
+        GLES20.glUniform1f(u(sceneProg, "uCamNear"), third ? (float) Math.max(0.0, camDist - 0.7) : 0f);
+        GLES20.glUniform1f(u(sceneProg, "uCharShow"), third ? 1f : 0f);
+        if (third) {
+            character.pose(px, eyeY - EYE_HEIGHT, pz, charYaw, walkAmt, walkPhase, arms.swingPhase(), arms.sword, time, offX, offZ);
+            character.toolMatrix(toolM);
+            GLES20.glUniform4fv(u(sceneProg, "uPartM"), Character.PARTS * 3, character.partM, 0);
+            GLES20.glUniform4fv(u(sceneProg, "uPartBox"), Character.PARTS, character.partBox, 0);
+            GLES20.glUniform3f(u(sceneProg, "uCharDims"), character.ax, character.ay, character.az);
+            GLES20.glUniform4fv(u(sceneProg, "uCharSphere"), 1, character.sphere, 0);
+            GLES20.glUniform4fv(u(sceneProg, "uToolM"), 3, toolM, 0);
+            GLES20.glUniform3f(u(sceneProg, "uSwordO"), 0f, 0f, 0f);       // the tool matrix does it all
+            GLES20.glUniform3f(u(sceneProg, "uSwordB"), 0f, 0f, 1f);
+            GLES20.glUniform3f(u(sceneProg, "uSwordE"), 1f, 0f, 0f);
+        }
         GLES20.glUniform3f(u(sceneProg, "uCam"), (float) (camX - offX), camY, (float) (camZ - offZ));
         GLES20.glUniform2f(u(sceneProg, "uCloudO"), (float) mod(px + windX, 2000.0), (float) mod(pz + windZ, 2000.0));
         GLES20.glUniform3fv(u(sceneProg, "uSunDir"), 1, sky.sunDir, 0);
@@ -565,6 +619,32 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         final int C = Voxels.CHUNK_V;
         for (Voxels.VolChunk c : freshV)
             GLUtil.subTexture3D(volTex, c.rg, Math.floorMod(c.cx * C, Voxels.NX), 0, Math.floorMod(c.cz * C, Voxels.NZ), C, Voxels.NY, C);
+    }
+
+    private double camDist = 2.7;
+
+    /** Switch between third and first person. */
+    void toggleView() {
+        thirdPerson = !thirdPerson;
+    }
+
+    /** Her heading follows where she walks (and turns to face the dig when swinging); the stride. */
+    private void animateCharacter(float dt) {
+        if (Double.isNaN(lastPx)) { lastPx = px; lastPz = pz; }
+        double vx = (px - lastPx) / Math.max(dt, 1e-4), vz = (pz - lastPz) / Math.max(dt, 1e-4);
+        lastPx = px;
+        lastPz = pz;
+        float speed = (float) Math.sqrt(vx * vx + vz * vz);
+        float want = charYaw;
+        if (arms.swinging()) want = yaw;
+        else if (speed > 0.3f) want = (float) Math.atan2(vx, -vz);
+        float dy = want - charYaw;
+        while (dy > Math.PI) dy -= (float) (Math.PI * 2);
+        while (dy < -Math.PI) dy += (float) (Math.PI * 2);
+        charYaw += dy * Math.min(1f, dt * 9f);
+        walkAmt += (Math.min(1f, speed / WALK_SPEED) - walkAmt) * Math.min(1f, dt * 8f);
+        walkPhase += dt * speed / 1.45f * (float) Math.PI;
+        if (walkPhase > 1000f) walkPhase -= (float) (Math.PI * 200);
     }
 
     private void updatePlayer(float dt) {

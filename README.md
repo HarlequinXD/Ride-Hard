@@ -49,6 +49,24 @@ Hollowspire.
   and two colours. Nothing is a mesh: every pixel's ray walks the 16 m tree cells, steps through
   each species' zone grid and tests the capsules and leaf cards inside. Bark has 4 textures.
   Shadows on the ground are cast from the real branches and leaves.
+- **Third-person character, per pixel (no polygons)**: the player is the woman from
+  `Ch02_nonPBR.fbx` (orange cat T-shirt, denim shorts, yellow trainers), seen from behind and over
+  the right shoulder; the camera pulls in where rock is in the way and trees between you and her
+  are cut away. `tools/build_character.py` (with its own FBX reader, `tools/fbxparse.py`) remakes
+  the mesh as 16 rigid parts that follow the skeleton (hips, spine, chest, head with hair, upper
+  arms, forearms, hands, thighs, shins, feet), each a 1 cm grid of signed distances plus the
+  texture coordinate of the nearest surface point, packed in one 3D atlas; the hair cards become a
+  thin solid shell. The shader sphere-traces the smooth union of the posed parts, so knees, elbows
+  and shoulders blend as they bend. Her textures come from the FBX: the colour map, the normal map
+  turned into each part's own frame (no tangents needed at runtime), and a **height map made from
+  the normal map** (integrated with FFTs: the surface whose slopes match the normals). That height
+  map drives **parallax occlusion mapping** on her: the texture coordinates' gradient through the
+  grid gives the direction the texture runs over the surface, and each pixel steps down into the
+  relief along the view (folds, seams, stitching, hair strands), with the creases darkened too. She
+  is posed procedurally: arms lowered from the T-pose, a walk cycle (legs, knee bend, arm swing,
+  shoulders against hips, a little bob), breathing, carrying the pickaxe with the forearm raised,
+  and a two-handed overhead swing when you dig (she turns to face where you are looking). A soft
+  shadow sits under her. V (or LB on the pad) switches to first person.
 - **First-person arms, per pixel**: smooth distance-field arms traced per pixel: a dark oiled
   leather bracer with stitching, two straps and iron buckles over each forearm, a linen wrap at
   the wrist, then bare hands with a padded, slightly cupped palm, knuckle ridges, finger joints and
@@ -107,7 +125,8 @@ Hollowspire.
   5-9 clods of dirt break off and fly out of the bite. They tumble, bounce and roll against the
   real terrain, and where each comes to rest it adds a lump of loose dirt to the ground, so hitting
   one spot digs a hole with a spoil heap around it. Dug and heaped ground shows as bare earth. What
-  you dig is kept per chunk and comes back when you return. F / B puts the pickaxe away.
+  you dig is kept per chunk and comes back when you return. F / B puts the pickaxe away. In third
+  person she swings it two-handed into the ground in front of her.
 - **Tree Builder** (button top-left): pick any of the 10 species and edit it with sliders in six
   tabs (Trunk, Branches, Sub-branches, Twigs, Leaves, Bark): height, bend, flare, branch count,
   angle, droop, twig density, leaf shape, size, count and colours, bark type and colour. The tree
@@ -151,6 +170,7 @@ last ten years).
 | Speed up time | X | T |
 | Swing the pickaxe (dig) | RT | Left click (hold to keep digging) |
 | Take out / put away the pickaxe | B | F |
+| Third / first person | LB | V |
 | Invert look | Click right stick | I |
 | Show / hide help | View or Menu | F1 |
 | Full screen | | F11 or Alt+Enter |

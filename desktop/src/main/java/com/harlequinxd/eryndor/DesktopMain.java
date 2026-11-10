@@ -268,6 +268,9 @@ public final class DesktopMain {
             case GLFW_KEY_I:
                 invertY = !invertY;
                 break;
+            case GLFW_KEY_V:
+                renderer.toggleView();
+                break;
             case GLFW_KEY_F:
                 renderer.toggleSword();
                 break;
@@ -387,6 +390,7 @@ public final class DesktopMain {
         if (pressed(GLFW_GAMEPAD_BUTTON_BACK) || pressed(GLFW_GAMEPAD_BUTTON_START)) helpShown = !helpShown;
         if (pressed(GLFW_GAMEPAD_BUTTON_RIGHT_THUMB)) invertY = !invertY;
         if (pressed(GLFW_GAMEPAD_BUTTON_B)) renderer.toggleSword();
+        if (pressed(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER)) renderer.toggleView();
         for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; b++) {
             boolean d = pad.buttons(b) == GLFW_PRESS;
             if (d) active = true;
