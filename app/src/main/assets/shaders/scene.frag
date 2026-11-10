@@ -210,6 +210,24 @@ float surfHeight(vec2 xz, float t) {
     return h * (layer == 1 ? COBBLE_DEPTH : GRASS_DEPTH) * smoothstep(SURF_FAR, SURF_FAR * 0.5, t);
 }
 
+// Self-shadowing of the texture relief (as in parallax occlusion mapping with shadows): march a
+// short way toward the sun over the height map; anything taller than the ray shades this pixel.
+// Returns 1 lit .. 0 in the shadow of a neighbouring stone or clump.
+float surfShadow(vec2 xz, float t) {
+    if (t > SURF_FAR || uSunDir.y < 0.03) return 1.0;
+    float h0 = surfHeight(xz, t);
+    vec2 dir = normalize(uSunDir.xz + vec2(1e-5));
+    float rise = uSunDir.y / max(length(uSunDir.xz), 1e-3);   // ray height gained per metre
+    float occ = 0.0;
+    float j = bayer4(gl_FragCoord.xy) * 0.012;                  // dithered start: no banding
+    for (int i = 1; i <= 10; i++) {
+        float d = float(i) * 0.018 + j;
+        float hs = surfHeight(xz + dir * d, t);
+        occ = max(occ, clamp((hs - (h0 + d * rise)) / 0.008, 0.0, 1.0));
+    }
+    return 1.0 - occ;
+}
+
 
 // ---- 3D ferns, evaluated per pixel as an implicit shape (no geometry, no voxel grid)
 const float FERN_CELL = 4.0;
@@ -659,7 +677,7 @@ void main() {
 
     // ---- march the layered heightmap: solid if below the floor, or inside the rock over a cave
     vec3 ro = uCam;
-    float t = 0.05, prevT = 0.0, hitT = -1.0;
+    float t = 0.05 + bayer4(gl_FragCoord.xy) * 0.012, prevT = 0.0, hitT = -1.0;   // dithered start
     float isFern = 0.0;
     vec3 fcol = vec3(0.0);
     for (int i = 0; i < 260; i++) {
@@ -798,6 +816,8 @@ void main() {
     float shadow = coverage(cloudField(uCloudO + (wp - ro.xz) + sOff));
     float sunRel = clamp(0.78 + 1.15 * (dot(n, uSunDir) - max(uSunDir.y, 0.05)), 0.25, 1.45);
     vec3 light = uAmbient * mix(1.0, sunRel, uSunVis) * (1.0 - 0.42 * shadow * uSunVis);
+    // crevices between cobbles and under grass clumps fall into the shade of their neighbours
+    if (isGrass > 0.5 && T < SURF_FAR) light *= 1.0 - 0.42 * (1.0 - surfShadow(wp, T)) * uSunVis * (1.0 - shadow * 0.6);
     light *= mix(0.05, 1.0, open);
     float dark = clamp(1.0 - open * (1.0 - uStars * 0.85), 0.0, 1.0);   // caves, and night outside
     vec3 lantern = vec3(1.0, 0.70, 0.40) * 1.6 / (1.0 + T * T * 0.09) * max(dot(n, -d), 0.25) * dark;

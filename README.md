@@ -57,7 +57,9 @@ Hollowspire.
   map, point sampled, with tree shadows on top; two placements, one turned and larger, are mixed
   per pixel by a dithered noise so the tile doesn't repeat visibly. Small detail comes only from
   the textures: each set's height map is traced per pixel (cobbles bulge 6 cm out of the mortar,
-  grass clumps 3.5 cm), and the map itself no longer paints or raises small flora (flowers,
+  grass clumps 3.5 cm), with real silhouettes, plus self-shadowing like parallax occlusion
+  mapping (a short march toward the sun over the height map shades the crevices) and dithered
+  ray steps so there's no banding; the map itself no longer paints or raises small flora (flowers,
   shrubs, tall grass clumps, reeds, mushroom rings, ferns) or paving joints; rocks, logs,
   stumps, cairns, curbs and walls remain (`WorldTextures.FLORA` turns the flora back on).
 - **Sword, per pixel**: a longsword in the right hand: a diamond-section steel blade with a
