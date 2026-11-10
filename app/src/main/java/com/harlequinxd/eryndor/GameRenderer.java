@@ -206,6 +206,12 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         sky.worldReady = true;
     }
 
+    /** Move the player (testing). */
+    void teleport(double x, double z) {
+        px = x;
+        pz = z;
+    }
+
     /** Draw or sheathe the sword in the right hand. */
     void toggleSword() {
         arms.sword = !arms.sword;

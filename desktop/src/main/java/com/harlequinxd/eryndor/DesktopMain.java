@@ -156,6 +156,11 @@ public final class DesktopMain {
         if (hour != null) sky.hour = Float.parseFloat(hour);
         if (weather != null) for (int i = Integer.parseInt(weather); i > 0; i--) sky.requestNextWeather();
         renderer = new GameRenderer(input, sky, new AssetManager(), dataDir);
+        String pos = System.getenv("ERYNDOR_POS");             // testing: ERYNDOR_POS=x,z
+        if (pos != null) {
+            String[] p = pos.split(",");
+            renderer.teleport(Double.parseDouble(p[0]), Double.parseDouble(p[1]));
+        }
         renderer.onSurfaceCreated(null, null);
         overlay = new Overlay();
 

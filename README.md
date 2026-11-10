@@ -43,6 +43,11 @@ Hollowspire.
   soft-shoulder tone map. Roughness per material (grass 0.9, cobbles 0.62, wet ground glossier),
   metals take their colour as F0 (the sword's steel, the iron guard, brass bands, the arm plates
   and buckles), and leaves and grass let light through from behind.
+- **Real-time global illumination**: each ground pixel within 45 m casts three short rays over
+  the heightmap across its hemisphere (directions dithered per pixel); escaped rays bring sky
+  light, rays that hit terrain bring the light bounced off that spot (its colour, lit by sun and
+  sky, and how open its sky is). Colour bleeding, ambient occlusion in hollows and caves, and cave
+  mouths lighting the tunnel. Trees, arms and sword get sky plus light bounced up off the meadow.
 - **Sun shafts and glare**: the scene writes how much open sky each pixel shows into its alpha
   (clouds, hills, the Hollowspire, trees, arms and the sword all block it); the final pass blurs
   that mask toward the sun's place on screen (dithered steps) for light shafts through branches

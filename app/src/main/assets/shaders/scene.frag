@@ -190,6 +190,7 @@ const float PI = 3.14159265;
 const float SUN_E = 2.4;          // sun irradiance (linear), so full sun on flat ground ~ albedo
 const float SKY_E = 0.45;         // sky ambient irradiance factor
 vec3 toLin(vec3 c) { return c * c; }
+vec3 gGI = vec3(-1.0);            // ambient light from the GI rays (linear); < 0 = use sky + ground bounce
 vec3 toDisp(vec3 c) { return sqrt(max(c, 0.0)); }
 
 vec3 tonemap(vec3 c) {            // linear up to 0.8, then a soft shoulder (no hard clipping)
@@ -219,9 +220,18 @@ vec3 pbr(vec3 albD, vec3 n, vec3 v, float rough, float metal, float sunLit, floa
     vec3 sunRad = toLin(uSunCol) * SUN_E * uSunVis * sunLit * open;
     vec3 col = (kd * alb / PI + spec) * sunRad * NdL;
     col += trans * alb * sunRad * max(dot(-n, L), 0.0) * 0.35;                // through leaves and blades
-    // sky: diffuse from the hemisphere above, specular from the sky in the mirror direction
-    vec3 amb = toLin(uAmbient) * SKY_E * ao * mix(0.05, 1.0, open);
-    col += kd * alb * amb * (0.75 + 0.25 * n.y);
+    // ambient: traced global illumination where available, otherwise sky from above plus light
+    // bounced up off the sunlit meadow below; specular from the sky in the mirror direction
+    vec3 amb;
+    if (gGI.x >= 0.0) {
+        amb = gGI * ao;
+    } else {
+        amb = toLin(uAmbient) * SKY_E * mix(0.05, 1.0, open) * (0.75 + 0.25 * n.y);
+        vec3 meadow = toLin(vec3(0.30, 0.34, 0.15));
+        amb += meadow * (toLin(uSunCol) * SUN_E * uSunVis * 0.8 / PI + toLin(uAmbient) * SKY_E) * open * (0.5 - 0.5 * n.y) * 0.8;
+        amb *= ao;
+    }
+    col += kd * alb * amb;
     vec3 rd = reflect(-v, n);
     vec3 env = toLin(skyColor(normalize(vec3(rd.x, max(rd.y, 0.02), rd.z))));
     env = mix(env, amb * 1.6, r * r) * (rd.y < 0.0 ? 0.45 : 1.0) * ao * mix(0.03, 1.0, open);
@@ -541,6 +551,55 @@ void shadeTree(int sp, int pid, vec2 leafUv, vec3 hl, vec3 rdl, float yaw, out v
 }
 
 
+
+// ---------------------------------------------------------------------------------------------
+// Real-time global illumination over the heightmap. Three short rays per pixel across the
+// cosine-weighted hemisphere (turned per pixel by the dither, so the noise reads as the game's
+// dither): a ray that escapes brings sky light, one that hits terrain brings the light bouncing
+// off that spot (its colour, lit by the sun and the sky there). Gives colour bleeding, ambient
+// occlusion in hollows and caves, and cave mouths lighting the cave inside.
+// Returns the ambient light for pbr() (linear), already including openness.
+const float GI_FAR = 45.0;
+vec3 giAmbient(vec3 p, vec3 n, float t) {
+    vec3 skyL = toLin(uAmbient) * SKY_E;
+    vec3 sunL = toLin(uSunCol) * SUN_E * uSunVis;
+    vec3 tng = normalize(abs(n.y) < 0.95 ? cross(n, vec3(0.0, 1.0, 0.0)) : cross(n, vec3(1.0, 0.0, 0.0)));
+    vec3 btg = cross(n, tng);
+    float rot = bayer4(gl_FragCoord.xy) * 6.2832;
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < 3; i++) {
+        float a = rot + float(i) * 2.0944;
+        float r2 = (float(i) + 0.5) / 3.0;                        // cosine-weighted rings
+        float rr = sqrt(r2);
+        vec3 dir = normalize(tng * cos(a) * rr + btg * sin(a) * rr + n * sqrt(1.0 - r2));
+        vec3 q = p + n * 0.15;
+        float dist = 0.0, len = 0.35;
+        bool hitT = false;
+        for (int k = 0; k < 6; k++) {
+            dist += len;
+            len *= 1.6;
+            q = p + n * 0.15 + dir * dist;
+            vec4 hm = texture(uHeight, q.xz / 256.0) * HMAX;
+            if (q.y < hm.r || (q.y > hm.g && q.y < hm.b)) { hitT = true; break; }
+        }
+        vec4 hq = texture(uHeight, q.xz / 256.0);
+        if (hitT) {
+            vec3 albq = toLin(texture(uGround, q.xz / 256.0).rgb);
+            // the spot's slope from the heightmap, and how open its sky is
+            vec2 e = vec2(0.6, 0.0);
+            float gx = (texture(uHeight, (q.xz + e.xy) / 256.0).r - texture(uHeight, (q.xz - e.xy) / 256.0).r) * HMAX;
+            float gz = (texture(uHeight, (q.xz + e.yx) / 256.0).r - texture(uHeight, (q.xz - e.yx) / 256.0).r) * HMAX;
+            vec3 nq = normalize(vec3(-gx, 1.2, -gz));
+            float oq = hq.a;
+            sum += albq * (sunL * max(dot(nq, uSunDir), 0.0) * oq / PI + skyL * mix(0.05, 1.0, oq));
+        } else {
+            // escaped: sky light, unless the ray is still under rock (deep in a cave)
+            float under = step(q.y, hq.b * HMAX - 0.5);
+            sum += skyL * mix(1.0, hq.a, under) * (0.85 + 0.3 * max(dir.y, 0.0));
+        }
+    }
+    return sum / 3.0;
+}
 // ---------------------------------------------------------------------------------------------
 // First-person arms, per pixel. Each arm is a solid between a top height (back of hand) and a
 // bottom height (palm) over a 544 x 176 grid. Every finger has its own knuckle and curls on its
@@ -912,7 +971,14 @@ void main() {
         if (T < SURF_FAR) sunLit *= surfShadow(wp, T);                   // self-shadowed relief
     }
     float lamp = 1.4 / (1.0 + T * T * 0.09) * dark;
+    if (T < GI_FAR && hit > 0.5 && kind < 0.5) {
+        vec3 gi = giAmbient(hp, n, T);
+        float far = smoothstep(GI_FAR * 0.6, GI_FAR, T);                // fade to the plain sky term
+        vec3 plain = toLin(uAmbient) * SKY_E * mix(0.05, 1.0, open) * (0.75 + 0.25 * n.y);
+        gGI = mix(gi, plain, far);
+    }
     vec3 land = pbr(albedo * mix(1.0, 0.70, wetK), n, -d, rough, 0.0, sunLit, open, 1.0, lamp, trans);
+    gGI = vec3(-1.0);
     float fres = 0.25 + 0.75 * pow(1.0 - min(max(-d.y, 0.0), 1.0), 5.0);
     vec3 wcol = mix(gt.rgb * light * 0.8, sky * 0.92 * mix(0.05, 1.0, open), fres);
     vec3 g = mix(land, wcol, water);
