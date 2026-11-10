@@ -263,13 +263,13 @@ float hash3(vec3 p) { return hash(p.xy + p.z * vec2(17.13, 31.71)); }
 // A: trunk height, trunk radius, crown radius, crown centre height
 // B: crown type (0 clusters, 1 tiered cone, 2 ellipsoid, 3 willow, 4 bare), leaf gaps, top, squash/stretch
 void treeParams(float v, out vec4 A, out vec4 B, out vec3 leaf, out vec3 bark) {
-    if (v < 0.5)      { A = vec4(3.0, 0.38, 4.2, 5.8); B = vec4(0.0, 0.22, 10.0, 0.85); leaf = vec3(0.19, 0.31, 0.11); bark = vec3(0.30, 0.25, 0.20); }  // oak
+    if (v < 0.5)      { A = vec4(3.0, 0.38, 4.2, 5.8); B = vec4(0.0, 0.32, 10.0, 0.85); leaf = vec3(0.19, 0.31, 0.11); bark = vec3(0.30, 0.25, 0.20); }  // oak
     else if (v < 1.5) { A = vec4(4.5, 0.16, 2.0, 7.0); B = vec4(2.0, 0.40, 10.4, 1.6);  leaf = vec3(0.42, 0.52, 0.20); bark = vec3(0.86, 0.85, 0.80); }  // birch
     else if (v < 2.5) { A = vec4(3.2, 0.26, 2.9, 0.0); B = vec4(1.0, 0.12, 11.5, 1.0);  leaf = vec3(0.11, 0.23, 0.13); bark = vec3(0.40, 0.26, 0.17); }  // scots pine
     else if (v < 3.5) { A = vec4(1.2, 0.24, 2.3, 0.0); B = vec4(1.0, 0.10, 13.5, 1.0);  leaf = vec3(0.09, 0.19, 0.14); bark = vec3(0.30, 0.22, 0.17); }  // spruce
     else if (v < 4.5) { A = vec4(2.6, 0.38, 3.9, 6.4); B = vec4(3.0, 0.30, 9.5, 1.0);   leaf = vec3(0.40, 0.52, 0.20); bark = vec3(0.32, 0.27, 0.21); }  // willow
     else if (v < 5.5) { A = vec4(5.5, 0.26, 3.2, 0.0); B = vec4(4.0, 0.0, 9.0, 1.0);    leaf = vec3(0.0);              bark = vec3(0.44, 0.41, 0.38); }  // dead
-    else if (v < 6.5) { A = vec4(3.0, 0.30, 3.4, 5.6); B = vec4(0.0, 0.25, 9.2, 0.9);   leaf = vec3(0.72, 0.30, 0.08); bark = vec3(0.28, 0.22, 0.18); }  // autumn maple
+    else if (v < 6.5) { A = vec4(3.0, 0.30, 3.4, 5.6); B = vec4(0.0, 0.32, 9.2, 0.9);   leaf = vec3(0.72, 0.30, 0.08); bark = vec3(0.28, 0.22, 0.18); }  // autumn maple
     else if (v < 7.5) { A = vec4(2.2, 0.22, 2.9, 4.3); B = vec4(0.0, 0.30, 7.4, 0.85);  leaf = vec3(0.93, 0.63, 0.72); bark = vec3(0.24, 0.17, 0.15); }  // blossom
     else if (v < 8.5) { A = vec4(1.6, 0.60, 4.0, 3.5); B = vec4(0.0, 0.08, 6.4, 0.6);   leaf = vec3(0.09, 0.17, 0.10); bark = vec3(0.36, 0.25, 0.20); }  // ancient yew
     else              { A = vec4(1.4, 0.20, 1.5, 8.0); B = vec4(2.0, 0.15, 14.0, 3.6);  leaf = vec3(0.24, 0.35, 0.14); bark = vec3(0.35, 0.30, 0.24); }  // poplar
@@ -281,14 +281,50 @@ float segDist(vec3 p, vec3 a, vec3 b) {
     return length(pa - ba * h);
 }
 
+// tapered branch: radius r0 at a down to r1 at b
+float branchDist(vec3 p, vec3 a, vec3 b, float r0, float r1) {
+    vec3 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - mix(r0, r1, h);
+}
+
 // signed distance (local metres, unscaled tree) ; part = 0 trunk/branch, 1 crown
 float treeSDF(vec3 q, vec4 A, vec4 B, float seed, out float part) {
     float trunkH = A.x, rT = A.y, R = A.z, cY = A.w, type = B.x;
     vec2 lean = (vec2(hash(vec2(seed, 1.0)), hash(vec2(seed, 2.0))) - 0.5) * 0.12;
-    float top = trunkH + 1.2;
+    // the trunk runs up into the heart of the crown (to near the tip on conifers)
+    float top = type < 0.5 ? cY : (type < 1.5 ? B.z - 0.6 : (type < 3.5 ? cY : trunkH + 1.2));
     float ty = clamp(q.y, 0.0, top);
-    float rad = rT * (1.0 - 0.35 * ty / top) * (1.0 + 0.7 * exp(-max(q.y, 0.0) * 3.0));   // root flare
+    float taper = type > 0.5 && type < 1.5 ? 0.85 : 0.55;
+    float rad = rT * (1.0 - taper * ty / top) * (1.0 + 0.7 * exp(-max(q.y, 0.0) * 3.0));   // root flare
     float dT = max(length(q.xz - lean * ty) - rad, q.y - top);
+    // branches
+    if (type < 0.5 || (type > 1.5 && type < 3.5)) {
+        float crownLow = type > 2.5 ? cY - R * 0.6 : (type < 0.5 ? cY - R * B.w * 0.8 : cY - R * B.w * 0.7);
+        for (int i = 0; i < 6; i++) {
+            float fi = float(i);
+            float a = hash(vec2(seed, fi + 31.0)) * 6.2831 + fi * 2.4;
+            float hs = mix(trunkH * 0.8, cY - 0.2, fi / 5.0);
+            vec3 st = vec3(lean.x * hs, hs, lean.y * hs);
+            float reach = R * (0.70 + 0.30 * hash(vec2(seed, fi + 37.0)));   // tips reach the crown edge
+            vec3 en = st + vec3(cos(a) * reach, R * (0.25 + 0.35 * hash(vec2(seed, fi + 41.0))) * (type < 0.5 ? B.w : 1.0), sin(a) * reach);
+            if (type > 1.5 && type < 2.5) en = st + vec3(cos(a) * R * 0.5, R * B.w * 0.6, sin(a) * R * 0.5);   // birch, poplar: steep
+            if (type > 2.5) en = st + vec3(cos(a) * R * 0.7, R * 0.15, sin(a) * R * 0.7);                       // willow: arching out
+            float r0 = rT * (0.62 - fi * 0.06);
+            dT = min(dT, branchDist(q, st, en, r0, r0 * 0.3));
+        }
+    } else if (type < 1.5) {                            // conifers: short branches under each tier
+        float hgt = B.z - trunkH;
+        for (int i = 0; i < 6; i++) {
+            float fi = float(i);
+            float hs = trunkH + hgt * (fi + 0.4) / 6.5;
+            float a = hash(vec2(seed, fi + 51.0)) * 6.2831 + fi * 2.1;
+            float reach = R * clamp((B.z - hs) / hgt, 0.0, 1.0) * 0.8;
+            vec3 st = vec3(lean.x * hs, hs, lean.y * hs);
+            vec3 en = st + vec3(cos(a) * reach, -0.25, sin(a) * reach);
+            dT = min(dT, branchDist(q, st, en, rT * 0.35, rT * 0.12));
+        }
+    }
     float dC = 1e3;
     if (type < 0.5) {                                   // clustered crown
         vec3 qq = vec3(q.x, cY + (q.y - cY) / B.w, q.z);
@@ -334,7 +370,7 @@ float treeSDF(vec3 q, vec4 A, vec4 B, float seed, out float part) {
 // crown foliage: lumpy outline plus leaf-sized gaps, all per pixel
 bool foliage(vec3 q, float s, vec4 A, vec4 B, float seed) {
     float R = A.z;
-    float lump = (vnoise(q.xz * 1.4 + q.y * 0.8 + seed) * 0.6 + vnoise(q.xy * 2.7 + q.z + seed) * 0.4) * R * (B.x > 2.5 ? 0.05 : 0.32);
+    float lump = (vnoise(q.xz * 1.4 + q.y * 0.8 + seed) * 0.6 + vnoise(q.xy * 2.7 + q.z + seed) * 0.4) * R * (B.x > 2.5 ? 0.05 : (B.x > 0.5 && B.x < 1.5 ? 0.10 : 0.28));
     if (s + lump > 0.0) return false;
     float shellK = smoothstep(-1.4, 0.0, s + lump);
     return hash3(floor(q * 6.0 + seed)) >= B.y * shellK;
