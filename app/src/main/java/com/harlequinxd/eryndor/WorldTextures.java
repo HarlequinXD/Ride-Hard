@@ -412,7 +412,9 @@ final class WorldTextures {
                 float h = hash(x, y), h2 = hash(x + 911, y - 317);
                 float a = 1f;
                 // detail height (m): grass is a fine fuzz of blades
-                float dh = 0.015f + 0.055f * h * h + 0.03f * bl0(blade, u, v);
+                // lumpy meadow: gentle hummocks plus a dense fuzz of grass blades
+                float hummock = smooth(0.35f, 0.9f, m2.at(u + 0.21f, v + 0.67f)) * 0.22f + (f1.at(u + 0.3f, v) - 0.5f) * 0.06f;
+                float dh = 0.03f + hummock + 0.11f * h * h + 0.05f * bl0(blade, u, v);
 
                 // ---- meadow: lush to sun-dried grass, strong per-texel blade variation
                 float t = smooth(0.30f, 0.75f, big);
@@ -594,17 +596,17 @@ final class WorldTextures {
         }
 
         // ---- scatter
-        for (int k = 0; k < 2600; k++) {                         // tall grass clumps
+        for (int k = 0; k < 9000; k++) {                         // tall grass clumps
             int cx = rnd.nextInt(S), cy = rnd.nextInt(S);
             if (busy[cy * S + cx] != 0) continue;
             tuft(R, G, B, cx, cy, rnd);
         }
-        for (int k = 0; k < 420; k++) {                          // mossy granite
+        for (int k = 0; k < 1300; k++) {                         // mossy granite
             int cx = rnd.nextInt(S), cy = rnd.nextInt(S);
             if (busy[cy * S + cx] != 0) continue;
             rock(R, G, B, cx, cy, 1.3f + rnd.nextFloat() * rnd.nextFloat() * 7f, rnd, f1);
         }
-        for (int k = 0; k < 700; k++) {                          // shrubs, gorse and bramble
+        for (int k = 0; k < 2100; k++) {                         // shrubs, gorse and bramble
             int cx = rnd.nextInt(S), cy = rnd.nextInt(S);
             if (busy[cy * S + cx] != 0) continue;
             bush(R, G, B, cx, cy, 3.5f + rnd.nextFloat() * 7f, rnd.nextFloat(), rnd.nextInt(1 << 20), f2);
@@ -612,6 +614,33 @@ final class WorldTextures {
         // standing stones on the rise west of the north road
         stoneCircle(R, G, B, STONES_X, STONES_Z, 7.5f, 11, f1, rnd);
         // fairy rings
+        for (int k = 0; k < 1400; k++) {                         // ferns
+            int cx = rnd.nextInt(S), cy = rnd.nextInt(S);
+            if (busy[cy * S + cx] != 0) continue;
+            fern(R, G, B, cx, cy, 3f + rnd.nextFloat() * 4f, rnd);
+        }
+        for (int k = 0; k < 160; k++) {                          // fallen logs
+            int cx = rnd.nextInt(S), cy = rnd.nextInt(S);
+            if (busy[cy * S + cx] != 0) continue;
+            log(R, G, B, cx, cy, 10f + rnd.nextFloat() * 18f, 1.6f + rnd.nextFloat() * 1.6f, rnd.nextFloat() * (float) Math.PI, rnd, f2);
+        }
+        for (int k = 0; k < 220; k++) {                          // tree stumps
+            int cx = rnd.nextInt(S), cy = rnd.nextInt(S);
+            if (busy[cy * S + cx] != 0) continue;
+            stump(R, G, B, cx, cy, 2.2f + rnd.nextFloat() * 2.5f, rnd);
+        }
+        for (int k = 0; k < 90; k++) {                           // stone cairns
+            int cx = rnd.nextInt(S), cy = rnd.nextInt(S);
+            if (busy[cy * S + cx] != 0) continue;
+            for (int j = 0; j < 7; j++)
+                rock(R, G, B, cx + rnd.nextInt(9) - 4, cy + rnd.nextInt(9) - 4, 1.5f + rnd.nextFloat() * 2.5f, rnd, f1);
+            rock(R, G, B, cx, cy, 2.5f, rnd, f1);
+        }
+        for (int k = 0; k < 500; k++) {                          // molehills
+            int cx = rnd.nextInt(S), cy = rnd.nextInt(S);
+            if (busy[cy * S + cx] != 0) continue;
+            molehill(R, G, B, cx, cy, 2f + rnd.nextFloat() * 2f, rnd);
+        }
         fairyRing(R, G, B, 196f, 70f, 2.4f, rnd);
         fairyRing(R, G, B, 40f, 110f, 1.8f, rnd);
         fairyRing(R, G, B, 210f, 222f, 2.9f, rnd);
@@ -717,6 +746,103 @@ final class WorldTextures {
                     float prof = (float) Math.sqrt(Math.max(0f, 1f - (d / er) * (d / er)));
                     raise(i, (0.35f + rad / PPM * 0.55f) * prof * 0.55f);
                 }
+            }
+    }
+
+    /** Fern seen from above: arching fronds radiating from a crown. */
+    private static void fern(float[] R, float[] G, float[] B, int cx, int cy, float len, Random rnd) {
+        final int S = GROUND_SIZE;
+        int fronds = 6 + rnd.nextInt(5);
+        float tint = 0.85f + rnd.nextFloat() * 0.3f;
+        for (int f = 0; f < fronds; f++) {
+            double ang = rnd.nextDouble() * Math.PI * 2;
+            float l = len * (0.7f + 0.3f * rnd.nextFloat());
+            for (float s = 0; s <= l; s += 0.5f) {
+                float k = s / l;
+                float w = 1.6f * (float) Math.sin(Math.PI * Math.min(1f, k * 1.1f)) + 0.3f;
+                float bx = cx + (float) Math.cos(ang) * s, by = cy + (float) Math.sin(ang) * s;
+                for (float o = -w; o <= w; o += 0.5f) {
+                    int x = Math.floorMod((int) (bx - Math.sin(ang) * o), S), y = Math.floorMod((int) (by + Math.cos(ang) * o), S);
+                    int i = y * S + x;
+                    float light = (0.75f + 0.35f * (1f - Math.abs(o) / (w + 0.01f))) * tint * (0.9f + 0.2f * hash(x, y));
+                    // shadow first, one texel south-east
+                    int sh = Math.floorMod(y + 1, S) * S + Math.floorMod(x + 1, S);
+                    R[sh] *= 0.85f; G[sh] *= 0.85f; B[sh] *= 0.85f;
+                    R[i] = 0.26f * light; G[i] = 0.44f * light; B[i] = 0.16f * light;
+                    raise(i, 0.55f * (float) Math.sin(Math.PI * (0.15f + 0.7f * k)) * (1f - 0.4f * Math.abs(o) / (w + 0.01f)));
+                }
+            }
+        }
+    }
+
+    /** Fallen log: a rotated capsule of bark with a pale cut end and a soft shadow. */
+    private static void log(float[] R, float[] G, float[] B, int cx, int cy, float len, float rad, float rot, Random rnd, PNoise fn) {
+        final int S = GROUND_SIZE;
+        float c = (float) Math.cos(rot), s = (float) Math.sin(rot);
+        int ext = (int) (len + rad + 4);
+        for (int pass = 0; pass < 2; pass++)
+            for (int dy = -ext; dy <= ext; dy++)
+                for (int dx = -ext; dx <= ext; dx++) {
+                    float qx = dx - (pass == 0 ? rad * 0.8f : 0), qy = dy - (pass == 0 ? rad * 0.8f : 0);
+                    float a = qx * c + qy * s, b = -qx * s + qy * c;            // along, across
+                    float ac = Math.max(-len / 2, Math.min(len / 2, a));
+                    float d = (float) Math.sqrt((a - ac) * (a - ac) + b * b);
+                    if (d >= rad) continue;
+                    int x = Math.floorMod(cx + dx, S), y = Math.floorMod(cy + dy, S), i = y * S + x;
+                    if (pass == 0) { R[i] *= 0.6f; G[i] *= 0.6f; B[i] *= 0.6f; continue; }
+                    float prof = (float) Math.sqrt(1f - (b / rad) * (b / rad));
+                    float bark = 0.75f + 0.25f * hash((int) (a * 1.5f) + x, (int) (b * 3)) + 0.2f * (fn.at((x + .5f) / S, (y + .5f) / S) - 0.5f);
+                    float light = (0.55f + 0.5f * prof - 0.25f * (b / rad) * (c - s)) * bark;
+                    float r = 0.38f * light, g = 0.29f * light, bb = 0.20f * light;
+                    if (Math.abs(a) > len / 2 - 0.8f) { r = 0.62f * light; g = 0.50f * light; bb = 0.34f * light; }   // cut end
+                    if (hash(x * 3, y) > 0.9f) { r = lerp(r, 0.30f, 0.6f); g = lerp(g, 0.42f, 0.6f); bb = lerp(bb, 0.18f, 0.6f); } // moss
+                    R[i] = r; G[i] = g; B[i] = bb;
+                    raise(i, rad / PPM * 2f * (0.5f + 0.5f * prof));
+                }
+    }
+
+    /** Sawn tree stump with growth rings. */
+    private static void stump(float[] R, float[] G, float[] B, int cx, int cy, float rad, Random rnd) {
+        final int S = GROUND_SIZE;
+        int ext = (int) (rad * 2.2f) + 2;
+        float hgt = 0.35f + rnd.nextFloat() * 0.35f;
+        for (int dy = -ext; dy <= ext; dy++)
+            for (int dx = -ext; dx <= ext; dx++) {
+                float ds = (float) Math.sqrt((dx - rad) * (dx - rad) + (dy - rad * 0.7f) * (dy - rad * 0.7f));
+                if (ds < rad * 1.1f) {
+                    int i = Math.floorMod(cy + dy, S) * S + Math.floorMod(cx + dx, S);
+                    R[i] *= 0.6f; G[i] *= 0.6f; B[i] *= 0.6f;
+                }
+            }
+        for (int dy = -ext; dy <= ext; dy++)
+            for (int dx = -ext; dx <= ext; dx++) {
+                float d = (float) Math.sqrt(dx * dx + dy * dy);
+                if (d >= rad) continue;
+                int x = Math.floorMod(cx + dx, S), y = Math.floorMod(cy + dy, S), i = y * S + x;
+                float r, g, b;
+                if (d > rad - 1.0f) { r = 0.30f; g = 0.23f; b = 0.16f; }               // bark rim
+                else {
+                    float ring = 0.85f + 0.15f * (float) Math.sin(d * 2.6f);
+                    r = 0.66f * ring; g = 0.54f * ring; b = 0.38f * ring;
+                }
+                R[i] = r; G[i] = g; B[i] = b;
+                raise(i, hgt);
+            }
+    }
+
+    /** Molehill: a small dome of fresh dark soil. */
+    private static void molehill(float[] R, float[] G, float[] B, int cx, int cy, float rad, Random rnd) {
+        final int S = GROUND_SIZE;
+        int ext = (int) rad + 2;
+        for (int dy = -ext; dy <= ext; dy++)
+            for (int dx = -ext; dx <= ext; dx++) {
+                float d = (float) Math.sqrt(dx * dx + dy * dy);
+                if (d >= rad) continue;
+                int x = Math.floorMod(cx + dx, S), y = Math.floorMod(cy + dy, S), i = y * S + x;
+                float dome = (float) Math.sqrt(1f - (d / rad) * (d / rad));
+                float l = (0.7f + 0.4f * dome - 0.2f * (dx + dy) / rad) * (0.85f + 0.3f * hash(x, y));
+                R[i] = 0.30f * l; G[i] = 0.22f * l; B[i] = 0.15f * l;
+                raise(i, 0.18f * dome + 0.02f);
             }
     }
 

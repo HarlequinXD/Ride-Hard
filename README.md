@@ -9,7 +9,8 @@ Hollowspire.
   (2048 px over 256 m, nearest texels, pixel perfect); steep faces and cave rock use procedural
   stone; hills are shaded by the sun.
 - **Fine relief**: a second 2048 x 2048 detail heightmap, texel for texel with the ground colours,
-  lifts shrubs, boulders, pebbles, grass tufts, flowers, cobbles, curbs, bridge parapets, the
+  lifts lumpy hummocks, dense grass, shrubs, ferns, fallen logs, stumps, cairns, molehills,
+  boulders, pebbles, grass tufts, flowers, cobbles, curbs, bridge parapets, the
   fountain, the well and the standing stones. It is ray-marched per screen pixel with smooth
   (bilinear) heights, so detail is pixel-perfect columns of colour rather than cubes, and fades out
   past about 70 m. Big stones, rocks and shrubs block movement; grass and pebbles don't.
@@ -25,7 +26,8 @@ Hollowspire.
 - **Day/night**: full 24 h in 8 minutes (x20 with the Time button).
 - **Weather**: clear, cloudy, overcast, rain (wet ground), thunderstorm (lightning) and mist.
   Changes on its own; the Weather button cycles it.
-- **Look**: 240-line low-res buffer, nearest-neighbour upscale, 15-bit ordered dither.
+- **Look**: GBA resolution (160 lines, width follows the screen so it fills the whole display),
+  nearest-neighbour upscale, 15-bit ordered dither.
 - **Controls**: touch pad on the left 45% of the screen to walk, swipe anywhere else to look.
 
 ## Build

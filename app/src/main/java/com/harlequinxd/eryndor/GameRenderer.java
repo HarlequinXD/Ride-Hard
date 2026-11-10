@@ -21,14 +21,15 @@ import javax.microedition.khronos.opengles.GL10;
  */
 final class GameRenderer implements GLSurfaceView.Renderer {
 
-    private static final int LOW_RES_LINES = 240;
+    /** GBA vertical resolution; width follows the screen's aspect so it fills the whole display. */
+    private static final int LOW_RES_LINES = 160;
     private static final float FOV_Y = (float) Math.toRadians(68);
     private static final float EYE_HEIGHT = 1.68f;
     private static final float MAX_SLOPE = 1.1f;       // rise per metre the player can climb
     private static final float MIN_HEADROOM = 1.95f;
     private static final float WALK_SPEED = 4.2f;      // m/s at full stick
     private static final float LOOK_SENS = 0.0065f;    // radians per dp
-    private static final int GROUND_CACHE_VERSION = 6;
+    private static final int GROUND_CACHE_VERSION = 7;
 
     private final Input input;
     private final SkyState sky;
