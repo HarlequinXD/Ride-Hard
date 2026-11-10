@@ -28,7 +28,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private static final float MIN_HEADROOM = 1.95f;
     private static final float WALK_SPEED = 4.2f;      // m/s at full stick
     private static final float LOOK_SENS = 0.0065f;    // radians per dp
-    private static final int GROUND_CACHE_VERSION = 4;
+    private static final int GROUND_CACHE_VERSION = 5;
 
     private final Input input;
     private final SkyState sky;

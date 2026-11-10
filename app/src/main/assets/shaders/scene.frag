@@ -182,9 +182,9 @@ void main() {
             if (p.y < hm.r || (p.y > hm.g && p.y < hm.b)) b = m; else a = m;
         }
         hitT = b;
-        vec3 pb = ro + d * b;                 // blocked by the rock over a cave, not the floor?
+        vec3 pb = ro + d * b;                 // blocked by the underside of the rock over a cave?
         vec4 hb = texture2D(uHeight, pb.xz / 256.0) * HMAX;
-        if (pb.y >= hb.r && hb.b - hb.g > 0.4 && pb.y < hb.g + 0.6 && d.y > 0.0) kind = 1.0;
+        if (pb.y >= hb.r && pb.y > hb.g && pb.y < hb.b && (pb.y - hb.g) < (hb.b - pb.y)) kind = 1.0;
     }
     float hit = step(0.0, hitT);
     float T = hit > 0.5 ? hitT : FAR;
@@ -202,14 +202,17 @@ void main() {
     float gx = mix(h1.r - h2.r, h1.b - h2.b, useTop) * HMAX;
     float gz = mix(h3.r - h4.r, h3.b - h4.b, useTop) * HMAX;
     vec3 n = normalize(vec3(-gx, 2.0 * e, -gz));
-    if (kind > 0.5) n = vec3(0.0, -1.0, 0.0);
+    if (kind > 0.5) {                          // underside of the vault: normal from the ceiling layer
+        float cx = (h1.g - h2.g) * HMAX, cz = (h3.g - h4.g) * HMAX;
+        n = normalize(vec3(cx, -2.0 * e, cz));
+    }
     float steep = smoothstep(0.75, 0.45, n.y);
     if (kind > 0.5) steep = 1.0;
 
     // sky openness: test a point nudged off the surface; if it sits under rock, use that cell's value
     vec3 q = hp + n * 0.35;
     vec4 hq = texture2D(uHeight, q.xz / 256.0);
-    float under = step(0.4, (hq.b - hq.g) * HMAX) * step(q.y, hq.g * HMAX);
+    float under = step(q.y, hq.b * HMAX - 0.5);   // below the top of the rock here: cave, wall or cutting
     float open = mix(1.0, hq.a, under * hit);
 
     float water = (1.0 - gt.a) * hit * (1.0 - steep);

@@ -236,31 +236,45 @@ final class WorldTextures {
 
                 Cave.query(wx, wz);
                 float cd = Cave.chamberDist(wx, wz);
-                boolean inTunnel = Cave.dist < Cave.halfWidth(Cave.along) && Cave.along > 0.01f && Cave.along < len - 0.01f;
-                boolean inChamber = cd < Cave.CHAMBER_R;
-                if (inTunnel || inChamber) {
-                    float floor, ceil;
-                    if (inChamber) {
-                        float k = cd / Cave.CHAMBER_R;
-                        floor = endFloor - 0.6f * (1f - k * k);                       // shallow bowl
-                        ceil = endFloor + 2.8f + 5.2f * (float) Math.sqrt(Math.max(0f, 1f - k * k));  // dome
-                        along = len + 3f;
-                    } else {
-                        floor = mouthFloor - 0.05f * Cave.along;
-                        float k = Cave.dist / Cave.halfWidth(Cave.along);
-                        ceil = floor + 2.9f + 0.6f * (float) Math.sqrt(Math.max(0f, 1f - k * k))
-                                + 0.25f * (float) Math.sin(Cave.along * 0.9f);        // arched roof
-                        along = Cave.along;
+                // vaulted cross-sections: the ceiling curves all the way down to meet the floor,
+                // so walls and roof are one smooth surface (no corner to stair-step on the grid)
+                float gap = -1f, floor = 0f, ceil = 0f;
+                // the vault closes at k = 1; a band just beyond keeps the layers closed at the
+                // floor level so the ceiling layer meets the floor instead of leaving a sliver of air
+                if (Cave.along > 0.01f && Cave.along < len - 0.01f) {
+                    float hw = Cave.halfWidth(Cave.along) * 1.3f;
+                    float k = Cave.dist / hw;
+                    if (k < 1f + 1.2f / hw) {
+                        float kc = Math.min(k, 1f);
+                        float base = mouthFloor - 0.05f * Cave.along;
+                        float fT = base + 0.5f * kc * kc * kc * kc;
+                        float cT = k < 1f ? base + (3.7f + 0.25f * (float) Math.sin(Cave.along * 0.9f)) * (float) Math.sqrt(1f - k * k) : fT;
+                        cT = Math.max(cT, fT);
+                        if (cT - fT > gap) { gap = cT - fT; floor = fT; ceil = cT; along = Cave.along; }
                     }
-                    if (h - ceil >= 1.4f) {          // enough rock overhead: covered tunnel
+                }
+                if (cd < Cave.CHAMBER_R + 1.2f) {
+                    float k = cd / Cave.CHAMBER_R, kc = Math.min(k, 1f);
+                    float fC = endFloor - 0.6f * (1f - kc * kc) + 0.6f * kc * kc * kc * kc;   // shallow bowl
+                    float cC = k < 1f ? endFloor + 8.0f * (float) Math.sqrt(1f - k * k) : fC; // dome
+                    cC = Math.max(cC, fC);
+                    if (cC - fC > gap) { gap = cC - fC; floor = fC; ceil = cC; along = len + 3f; }
+                }
+                if (gap >= 0f) {
+                    if (h - ceil >= 1.4f) {          // enough rock overhead: layered cell
                         f = floor;
                         c = ceil;
                         t = h;
-                        sCover = Math.min(sCover, along);
-                    } else {                         // open cutting leading to the mouth
+                        if (gap > 0.05f) sCover = Math.min(sCover, along);
+                    } else if (gap > 0.05f) {        // open cutting leading to the mouth
                         f = Math.min(h, floor);
                         c = t = h;
+                        along = -1f;
+                    } else {
+                        along = -1f;
                     }
+                } else {
+                    along = -1f;
                 }
                 fl[i] = q8(f);
                 ce[i] = q8(c);
@@ -268,11 +282,24 @@ final class WorldTextures {
                 al[i] = along;
             }
         }
-        // sky openness: fades over the first 14 m under the roof
+        // sky openness: fades over the first 14 m under the roof...
+        float[] raw = new float[S * S];
         for (int i = 0; i < S * S; i++) {
             boolean covered = tp[i] - ce[i] > 0.5f;
-            op[i] = covered ? 1f - smooth(sCover - 2f, sCover + 14f, al[i]) : 1f;
+            raw[i] = covered ? 1f - smooth(sCover - 2f, sCover + 14f, al[i]) : 1f;
         }
+        // ...and bleeds a little into the surrounding rock, so the cave's walls share its darkness
+        final int R = 3;
+        for (int y = 0; y < S; y++)
+            for (int x = 0; x < S; x++) {
+                float m = raw[y * S + x];
+                for (int dy = -R; dy <= R; dy++)
+                    for (int dx = -R; dx <= R; dx++) {
+                        float o = raw[Math.floorMod(y + dy, S) * S + Math.floorMod(x + dx, S)];
+                        if (o < m) m = Math.min(m, o + 0.13f * (float) Math.sqrt(dx * dx + dy * dy));
+                    }
+                op[y * S + x] = Math.min(1f, m);
+            }
         hFloor = fl;
         hCeil = ce;
         hTop = tp;
@@ -490,7 +517,7 @@ final class WorldTextures {
                 // ---- cave floor in Hollow Hill: damp earth, grit and fallen stone
                 if (wx > 195f && wx < 266f && wz > 160f && wz < 216f) {
                     Cave.query(wx, wz);
-                    float hwc = Cave.halfWidth(Cave.along), cdc = Cave.chamberDist(wx, wz);
+                    float hwc = Cave.halfWidth(Cave.along) * 1.3f + 0.4f, cdc = Cave.chamberDist(wx, wz) - 0.4f;
                     float e1 = Cave.along > 0.01f && Cave.along < caveLen ? Cave.dist - hwc : 9f;
                     float e = Math.min(e1, cdc - Cave.CHAMBER_R);
                     if (e < 0.8f) {
