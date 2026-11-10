@@ -79,6 +79,21 @@ final class GLUtil {
         return t[0];
     }
 
+    /** 3D RG8 volume (x, y, z), trilinear, wrapping in x and z, clamped in y. */
+    static int texture3D(ByteBuffer data, int w, int h, int d) {
+        int[] t = new int[1];
+        GLES20.glGenTextures(1, t, 0);
+        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, t[0]);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES30.glTexImage3D(GLES30.GL_TEXTURE_3D, 0, GLES30.GL_RG8, w, h, d, 0, GLES30.GL_RG, GLES20.GL_UNSIGNED_BYTE, data);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_REPEAT);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_WRAP_R, GLES20.GL_REPEAT);
+        return t[0];
+    }
+
     /** Square ARGB layers as one 2D texture array: repeating, mipmapped, point sampled. */
     static int textureArray(int[][] layers, int size) {
         ByteBuffer bb = ByteBuffer.allocateDirect(size * size * 4 * layers.length).order(ByteOrder.nativeOrder());

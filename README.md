@@ -3,11 +3,17 @@
 A first-person fantasy RPG for Android. First milestone: the world around the village of
 Hollowspire.
 
-- **Pixel-voxel terrain**: every screen pixel marches a ray across a layered heightmap (floor,
-  cave ceiling, rock top, sky openness). One texture read per step gives hills, valleys, cliffs,
-  overhangs and **caves**. Ground colour comes from a painted photographic-style texture
-  (2048 px over 256 m, nearest texels, pixel perfect); steep faces and cave rock use procedural
-  stone; hills are shaded by the sun.
+- **Pixel-voxel terrain (a volume, not a heightmap)**: the land is a 3D signed-distance volume
+  (512 x 96 x 512 samples, 0.5 m apart, over the 256 m tile and 48 m of height) traced per screen
+  pixel: sphere steps through open air, fine steps near the surface, trilinear blending so every
+  surface is smooth (no cubes; the grid is only data). That allows real **tunnels, caves and
+  overhangs**: Hollow Hill's winding cave and domed chamber, and three ridges raised across open
+  country, each with a tunnel bored through under several metres of rock. Sky openness is traced
+  through the volume too (a second channel), so tunnels darken away from their portals and the
+  lantern takes over; walls, ceilings and tunnel floors are rock, the open-air ground keeps the
+  painted ground, texture sets and 2D relief. You walk on the first rock surface under your feet,
+  so you can go through a tunnel or over its ridge. The volume is built once (a couple of seconds)
+  and cached.
 - **Fine relief**: a second 2048 x 2048 detail heightmap, texel for texel with the ground colours,
   lifts lumpy hummocks, dense grass, shrubs, ferns, fallen logs, stumps, cairns, molehills,
   boulders, pebbles, grass tufts, flowers, cobbles, curbs, bridge parapets, the

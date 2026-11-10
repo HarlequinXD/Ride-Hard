@@ -14,7 +14,8 @@ out vec4 fragColor;
 
 uniform sampler2D uGround;   // rgb = ground colour, a = 0 open water, 0.5..1 land (lit fraction: tree shadows)
 uniform sampler2D uCloud;
-uniform sampler2D uHeight;   // r = floor, g = cave ceiling, b = rock top, a = sky openness
+uniform sampler2D uHeight;   // r = open-air ground surface (the volume below holds tunnels and caves)
+uniform highp sampler3D uVol; // terrain volume, 0.5 m: r = signed distance to the ground (-4..4 m), g = sky openness
 uniform sampler2D uDetail;   // fine relief on the floor: grass, pebbles, shrubs, rocks, walls (0..3 m)
 uniform sampler2D uMat;      // material id per texel: 0 grass, 1 earth, 2 stone, 3 wood, 4 water, 5 plant
 uniform sampler2D uFerns;    // one optional fern per 4 m cell: offset xz, size, presence + rotation
@@ -72,6 +73,26 @@ const float DMAX = 3.0;
 const float DFAR = 70.0;      // detail relief fades out by here
 
 float detailFade(float t) { return smoothstep(DFAR, DFAR * 0.4, t); }
+
+// ---- the terrain volume: smooth signed distance, traced per pixel (no cubes: the 0.5 m grid is
+//      only data, blended trilinearly)
+const vec3 VOL_SCALE = vec3(1.0 / 256.0, 1.0 / 48.0, 1.0 / 256.0);
+float volDist(vec3 p) {
+    if (p.y > 47.5) return p.y - 47.0;                          // above the volume: open air
+    float d = textureLod(uVol, p * VOL_SCALE, 0.0).r * 8.0 - 4.0;
+    return min(d, p.y - 0.3);                                    // bedrock
+}
+float volOpen(vec3 p) { return textureLod(uVol, p * VOL_SCALE, 0.0).g; }
+vec3 volNormal(vec3 p, float e) {
+    const vec2 k = vec2(1.0, -1.0);
+    return normalize(k.xyy * volDist(p + k.xyy * e) + k.yyx * volDist(p + k.yyx * e)
+                   + k.yxy * volDist(p + k.yxy * e) + k.xxx * volDist(p + k.xxx * e));
+}
+// how much the 2D surface detail applies here: on the open-air ground surface, not in tunnels
+float topWeight(vec3 p) {
+    float top = texture(uHeight, p.xz / 256.0).r * HMAX;
+    return smoothstep(-1.6, -0.5, p.y - top);
+}
 
 float hash(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -579,23 +600,19 @@ vec3 giAmbient(vec3 p, vec3 n, float t) {
             dist += len;
             len *= 1.6;
             q = p + n * 0.15 + dir * dist;
-            vec4 hm = texture(uHeight, q.xz / 256.0) * HMAX;
-            if (q.y < hm.r || (q.y > hm.g && q.y < hm.b)) { hitT = true; break; }
+            if (volDist(q) < 0.0) { hitT = true; break; }
         }
-        vec4 hq = texture(uHeight, q.xz / 256.0);
         if (hitT) {
-            vec3 albq = toLin(texture(uGround, q.xz / 256.0).rgb);
-            // the spot's slope from the heightmap, and how open its sky is
-            vec2 e = vec2(0.6, 0.0);
-            float gx = (texture(uHeight, (q.xz + e.xy) / 256.0).r - texture(uHeight, (q.xz - e.xy) / 256.0).r) * HMAX;
-            float gz = (texture(uHeight, (q.xz + e.yx) / 256.0).r - texture(uHeight, (q.xz - e.yx) / 256.0).r) * HMAX;
-            vec3 nq = normalize(vec3(-gx, 1.2, -gz));
-            float oq = hq.a;
+            // light bounced off the spot the ray hit: its colour (ground texture on the open-air
+            // surface, rock underground), lit by the sun and sky it sees
+            float d0 = volDist(q);
+            vec3 nq = normalize(vec3(volDist(q + vec3(0.4, 0.0, 0.0)) - d0, volDist(q + vec3(0.0, 0.4, 0.0)) - d0,
+                                     volDist(q + vec3(0.0, 0.0, 0.4)) - d0) + 1e-4);
+            float oq = volOpen(q + nq * 0.6);
+            vec3 albq = mix(vec3(0.20, 0.19, 0.17), toLin(texture(uGround, q.xz / 256.0).rgb), topWeight(q));
             sum += albq * (sunL * max(dot(nq, uSunDir), 0.0) * oq / PI + skyL * mix(0.05, 1.0, oq));
         } else {
-            // escaped: sky light, unless the ray is still under rock (deep in a cave)
-            float under = step(q.y, hq.b * HMAX - 0.5);
-            sum += skyL * mix(1.0, hq.a, under) * (0.85 + 0.3 * max(dir.y, 0.0));
+            sum += skyL * volOpen(q) * (0.85 + 0.3 * max(dir.y, 0.0));
         }
     }
     return sum / 3.0;
@@ -804,54 +821,49 @@ void main() {
     float cy = cos(uYaw), sy = sin(uYaw);
     d = vec3(d.x * cy - d.z * sy, d.y, d.x * sy + d.z * cy);
 
-    // ---- march the layered heightmap: solid if below the floor, or inside the rock over a cave
+    // ---- march the terrain volume: sphere steps through open air, fine steps near the surface,
+    //      where the 2D relief (rocks, texture height) rides on the open-air ground
     vec3 ro = uCam;
     float t = 0.05 + bayer4(gl_FragCoord.xy) * 0.012, prevT = 0.0, hitT = -1.0;   // dithered start
     float isFern = 0.0;
     vec3 fcol = vec3(0.0);
     for (int i = 0; i < 260; i++) {
         vec3 p = ro + d * t;
-        vec4 hm = texture(uHeight, p.xz / 256.0) * HMAX;
-        float det = 0.0;
-        if (t < DFAR) det = texture(uDetail, p.xz / 256.0).r * DMAX * detailFade(t);
-        if (t < SURF_FAR) det += surfHeight(p.xz, t);
-        float near = 0.0;
-        vec3 fc;
-        if (t < FERN_FAR && fernAt(p, fc, near)) { hitT = t; isFern = 1.0; fcol = fc; break; }
-        if (p.y < hm.r + det || (p.y > hm.g && p.y < hm.b)) { hitT = t; break; }
+        float dd = volDist(p);
+        float tw = 0.0;
+        if (dd < 4.0 && t < DFAR) {
+            tw = topWeight(p);
+            if (tw > 0.0) {
+                float det = texture(uDetail, p.xz / 256.0).r * DMAX * detailFade(t);
+                if (t < SURF_FAR) det += surfHeight(p.xz, t);
+                dd -= det * tw;
+            }
+        }
+        if (dd < 0.0) { hitT = t; break; }
         if (d.y > 0.0 && p.y > HMAX + DMAX) break;
         if (t > FAR) break;
         prevT = t;
-        float st = 0.035 + t * 0.026;
-        if (t < 4.0) st = min(st, 0.012 + t * 0.012);       // fine steps near: small texture relief
-        if (near > 0.5) st = min(st, 0.015 + t * 0.004);   // thin fronds need fine steps
+        float fine = 0.035 + t * 0.026;
+        if (t < 4.0) fine = min(fine, 0.012 + t * 0.012);     // small texture relief near you
+        float st = tw > 0.0 ? min(max(dd * 0.85, 0.01 + t * 0.004), fine) : max(dd * 0.85, 0.02 + t * 0.006);
         t += st;
     }
-    float kind = 0.0;                         // 0 ground/top surface, 1 cave ceiling, 2 rock face
+    float kind = 0.0;                         // 0 ground or tunnel floor, 1 ceiling / overhang underside
     if (hitT > 0.0) {
         float a = prevT, b = hitT;
-        for (int k = 0; k < 6; k++) {
+        for (int k = 0; k < 7; k++) {
             float m = 0.5 * (a + b);
             vec3 p = ro + d * m;
-            bool solid;
-            if (isFern > 0.5) {
-                float nr;
-                vec3 fc;
-                solid = fernAt(p, fc, nr);
-                if (solid) fcol = fc;
-            } else {
-                vec4 hm = texture(uHeight, p.xz / 256.0) * HMAX;
+            float dd = volDist(p);
+            float tw = topWeight(p);
+            if (tw > 0.0 && m < DFAR) {
                 float det = texture(uDetail, p.xz / 256.0).r * DMAX * detailFade(m);
                 if (m < SURF_FAR) det += surfHeight(p.xz, m);
-                solid = p.y < hm.r + det || (p.y > hm.g && p.y < hm.b);
+                dd -= det * tw;
             }
-            if (solid) b = m; else a = m;
+            if (dd < 0.0) b = m; else a = m;
         }
         hitT = b;
-        vec3 pb = ro + d * b;                 // blocked by the underside of the rock over a cave?
-        vec4 hb = texture(uHeight, pb.xz / 256.0) * HMAX;
-        float detb = texture(uDetail, pb.xz / 256.0).r * DMAX * detailFade(b);
-        if (isFern < 0.5 && pb.y >= hb.r + detb && pb.y > hb.g && pb.y < hb.b && (pb.y - hb.g) < (hb.b - pb.y)) kind = 1.0;
     }
     float hit = step(0.0, hitT);
     float T = hit > 0.5 ? hitT : FAR;
@@ -860,28 +872,19 @@ void main() {
 
     // ---- surface data (sampled outside the loop so texture LOD stays well defined)
     vec4 gt = texture(uGround, wp / 256.0);
-    vec4 hc = texture(uHeight, wp / 256.0);
-    float e = 0.5;
-    float useTop = step(0.4, (hc.b - hc.g) * HMAX) * step(hc.g * HMAX + 0.3, hp.y);  // on the rock top
-    vec2 ex = vec2(e, 0.0), ez = vec2(0.0, e);
-    vec4 h1 = texture(uHeight, (wp + ex) / 256.0), h2 = texture(uHeight, (wp - ex) / 256.0);
-    vec4 h3 = texture(uHeight, (wp + ez) / 256.0), h4 = texture(uHeight, (wp - ez) / 256.0);
-    float gx = mix(h1.r - h2.r, h1.b - h2.b, useTop) * HMAX;
-    float gz = mix(h3.r - h4.r, h3.b - h4.b, useTop) * HMAX;
-    vec3 nMacro = normalize(vec3(-gx, 2.0 * e, -gz));
-    // fine relief normal (0.125 m texels), faded with distance and ignored on the rock-top layer
+    vec3 nMacro = volNormal(hp, 0.3);                       // the volume's own surface normal
+    float onTop = hit * topWeight(hp - nMacro * 0.05);      // open-air ground (not a tunnel or overhang)
+    float useTop = 1.0 - onTop;                             // underground: rock, no 2D textures
+    // fine relief normal (0.125 m texels) on the open-air ground, faded with distance
     float e2 = 0.125;
     vec2 dx2 = vec2(e2, 0.0), dz2 = vec2(0.0, e2);
     float dfx = (texture(uDetail, (wp + dx2) / 256.0).r - texture(uDetail, (wp - dx2) / 256.0).r) * DMAX;
     float dfz = (texture(uDetail, (wp + dz2) / 256.0).r - texture(uDetail, (wp - dz2) / 256.0).r) * DMAX;
-    float dk = detailFade(T) * (1.0 - useTop);
-    vec3 n = normalize(vec3(-gx / (2.0 * e) - dfx / (2.0 * e2) * dk, 1.0, -gz / (2.0 * e) - dfz / (2.0 * e2) * dk));
-    if (kind > 0.5) {                          // underside of the vault: normal from the ceiling layer
-        float cx = (h1.g - h2.g) * HMAX, cz = (h3.g - h4.g) * HMAX;
-        n = normalize(vec3(cx, -2.0 * e, cz));
-    }
-    float steep = smoothstep(0.75, 0.45, nMacro.y);          // rock only on big slopes, not on shrubs
-    if (kind > 0.5) steep = 1.0;
+    float dk = detailFade(T) * onTop;
+    vec3 n = normalize(nMacro + vec3(-dfx, 0.0, -dfz) / (2.0 * e2) * dk * max(nMacro.y, 0.0));
+    if (nMacro.y < -0.2) kind = 1.0;
+    float steep = smoothstep(0.75, 0.45, nMacro.y);          // rock on big slopes, walls and ceilings
+    steep = max(steep, useTop);                              // and everywhere underground
 
     // per-pixel material texture and bump
     float mid = floor(texture(uMat, wp / 256.0).r * 255.0 / 40.0 + 0.5);
@@ -923,12 +926,9 @@ void main() {
     }
 
     // sky openness: test a point nudged off the surface; if it sits under rock, use that cell's value
-    vec3 q = hp + n * 0.35;
-    vec4 hq = texture(uHeight, q.xz / 256.0);
-    float under = step(q.y, hq.b * HMAX - 0.5);   // below the top of the rock here: cave, wall or cutting
-    float open = mix(1.0, hq.a, under * hit);
+    float open = mix(1.0, volOpen(hp + n * 0.5), hit);     // sky openness from the volume
 
-    float water = (1.0 - clamp(gt.a * 2.0, 0.0, 1.0)) * hit * (1.0 - steep) * (1.0 - isFern);
+    float water = (1.0 - clamp(gt.a * 2.0, 0.0, 1.0)) * hit * (1.0 - steep) * (1.0 - isFern) * onTop;
 
     // ---- one sky evaluation: the sky above, its mirror image in water below
     vec2 rip = vec2(vnoise(wp * 1.6 + uTime * 0.7), vnoise(wp * 1.6 - uTime * 0.55 + 7.0)) - 0.5;
@@ -971,7 +971,7 @@ void main() {
         if (T < SURF_FAR) sunLit *= surfShadow(wp, T);                   // self-shadowed relief
     }
     float lamp = 1.4 / (1.0 + T * T * 0.09) * dark;
-    if (T < GI_FAR && hit > 0.5 && kind < 0.5) {
+    if (T < GI_FAR && hit > 0.5) {
         vec3 gi = giAmbient(hp, n, T);
         float far = smoothstep(GI_FAR * 0.6, GI_FAR, T);                // fade to the plain sky term
         vec3 plain = toLin(uAmbient) * SKY_E * mix(0.05, 1.0, open) * (0.75 + 0.25 * n.y);
@@ -982,7 +982,7 @@ void main() {
     float fres = 0.25 + 0.75 * pow(1.0 - min(max(-d.y, 0.0), 1.0), 5.0);
     vec3 wcol = mix(gt.rgb * light * 0.8, sky * 0.92 * mix(0.05, 1.0, open), fres);
     vec3 g = mix(land, wcol, water);
-    float camOpen = texture(uHeight, ro.xz / 256.0).a;
+    float camOpen = volOpen(ro);
     float fog = 1.0 - exp(-T * uFog * mix(0.4, 1.0, camOpen));
     vec3 fogc = mix(vec3(0.0), uFogCol, max(open, camOpen));   // fog only goes black when you are in the dark
     vec3 ground = mix(g, fogc, fog);
@@ -1080,7 +1080,7 @@ void main() {
             mat3 Rt0 = transpose(uArmRot[0]);
             st = traceSword(Rt0 * (-uArmPos[0]) / ARM_S, Rt0 * dCam / ARM_S, sq, smat);
         }
-        float swordOpen = texture(uHeight, uCam.xz / 256.0).a;
+        float swordOpen = volOpen(uCam);
         if (st > 0.0 && st < at) {
             ai = -1;
             vec3 F = cross(uSwordB, uSwordE);
@@ -1122,7 +1122,7 @@ void main() {
             // camera -> world, same rotations as the view ray
             vec3 nw = vec3(nc.x, nc.y * cp - nc.z * sp, nc.y * sp + nc.z * cp);
             nw = vec3(nw.x * cy - nw.z * sy, nw.y, nw.x * sy + nw.z * cy);
-            float armOpen = texture(uHeight, uCam.xz / 256.0).a;
+            float armOpen = volOpen(uCam);
             float adark = clamp(1.0 - armOpen * (1.0 - uStars * 0.85), 0.0, 1.0);
             // physically based: leather and skin, with the steel plates, studs and buckles metallic
             // (bright, unsaturated texels)

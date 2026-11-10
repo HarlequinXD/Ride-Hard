@@ -188,7 +188,7 @@ final class WorldTextures {
     }
 
     /** Signed wrapped distance on the 256 m torus. */
-    private static float wrapD(float a, float b) {
+    static float wrapD(float a, float b) {
         float d = a - b;
         d -= WORLD_SIZE * Math.round(d / WORLD_SIZE);
         return d;
@@ -285,8 +285,65 @@ final class WorldTextures {
 
     private static PNoise[] terrainNoise;
 
+    /** The open-air ground surface (the voxel volume carves tunnels and caves below it). */
+    static float terrainAt(float wx, float wz) {
+        buildHeights();
+        return terrain(wx, wz);
+    }
+
+    /** Ridges raised for the tunnels: centre x, z, tunnel direction (radians). */
+    static float[][] ridges = new float[0][];
+    static final float RIDGE_H = 11f, RIDGE_HALF_LEN = 30f, RIDGE_HALF_WIDTH = 12f;
+
+    /** Ridge sites: highest open ground well clear of the village, roads, river, Hollow Hill and the stones. */
+    private static float[][] pickRidges() {
+        java.util.ArrayList<float[]> out = new java.util.ArrayList<>();
+        for (int pass = 0; pass < 3; pass++) {
+            float best = -1e9f;
+            float[] pick = null;
+            for (float z = 4; z < WORLD_SIZE; z += 8)
+                for (float x = 4; x < WORLD_SIZE; x += 8)
+                    for (int ai = 0; ai < 8; ai++) {
+                        float ang = ai * (float) Math.PI / 8f;
+                        boolean ok = true;
+                        for (float[] o : out)
+                            if (Math.hypot(wrapD(x, o[0]), wrapD(z, o[1])) < 60) ok = false;
+                        // the ridge runs across the tunnel; check points along and across it
+                        float rx = -(float) Math.sin(ang), rz = (float) Math.cos(ang);
+                        for (float sAl = -RIDGE_HALF_LEN; sAl <= RIDGE_HALF_LEN && ok; sAl += 6)
+                            for (float sAc = -26; sAc <= 26 && ok; sAc += 13) {
+                                float px = x + rx * sAl + (float) Math.cos(ang) * sAc, pz = z + rz * sAl + (float) Math.sin(ang) * sAc;
+                                if (Math.abs(wrapD(px, 128f)) < 74 && Math.abs(wrapD(pz, 128f)) < 74) ok = false;   // village
+                                if (Math.abs(wrapD(px, 128f)) < 14) ok = false;                                   // north road
+                                if (Math.abs(wrapD(pz, riverZ(px))) < riverHalfWidth(px) + 4) ok = false;         // river
+                                if (Math.hypot(wrapD(px, Cave.HILL_X), wrapD(pz, Cave.HILL_Z)) < 42) ok = false;  // Hollow Hill
+                                if (Math.hypot(wrapD(px, STONES_X), wrapD(pz, STONES_Z)) < 24) ok = false;        // standing stones
+                            }
+                        if (!ok) continue;
+                        float h = terrain(x, z);
+                        if (h > best) { best = h; pick = new float[]{x, z, ang}; }
+                    }
+            if (pick == null) break;
+            out.add(pick);
+        }
+        return out.toArray(new float[0][]);
+    }
+
     /** Open-air terrain height before any cave is cut. */
     private static float terrain(float wx, float wz) {
+        float h = terrainBase(wx, wz);
+        for (float[] r : ridges) {
+            float dx = wrapD(wx, r[0]), dz = wrapD(wz, r[1]);
+            float acrossT = dx * (float) Math.cos(r[2]) + dz * (float) Math.sin(r[2]);      // along the tunnel
+            float alongR = -dx * (float) Math.sin(r[2]) + dz * (float) Math.cos(r[2]);      // along the ridge
+            float prof = (float) Math.exp(-(acrossT * acrossT) / (RIDGE_HALF_WIDTH * RIDGE_HALF_WIDTH));
+            float ends = 1f - smooth(RIDGE_HALF_LEN - 14f, RIDGE_HALF_LEN, Math.abs(alongR));
+            h += RIDGE_H * prof * ends * (0.85f + 0.15f * (float) Math.cos(alongR * 0.21f));
+        }
+        return Math.min(h, HEIGHT_MAX - 2f);
+    }
+
+    private static float terrainBase(float wx, float wz) {
         PNoise[] n = terrainNoise;
         float u = wx / WORLD_SIZE, v = wz / WORLD_SIZE;
         float low = 5f + n[0].at(u, v) * 15f + n[1].at(u, v) * 8f;
@@ -333,13 +390,11 @@ final class WorldTextures {
         final int S = HEIGHT_SIZE;
         Random rnd = new Random(4711);
         terrainNoise = new PNoise[]{new PNoise(3, rnd), new PNoise(7, rnd), new PNoise(18, rnd), new PNoise(48, rnd), new PNoise(128, rnd)};
+        ridges = new float[0][];
+        ridges = pickRidges();
         float[] fl = new float[S * S], ce = new float[S * S], tp = new float[S * S], op = new float[S * S], al = new float[S * S];
 
-        float mouthFloor = terrain(Cave.PATH[0][0], Cave.PATH[0][1]);
-        float len = Cave.pathLength();
-        float endFloor = mouthFloor - 0.05f * len;
-        float sCover = 1e9f;
-
+        // one open-air surface: tunnels, caves and overhangs live in the voxel volume (Voxels)
         Loading.set("Shaping the land", 0.02f);
         for (int y = 0; y < S; y++) {
             if ((y & 15) == 0) Loading.within(0.02f, 0.09f, y / (float) S);
@@ -347,76 +402,13 @@ final class WorldTextures {
             for (int x = 0; x < S; x++) {
                 float wx = (x + 0.5f) / S * WORLD_SIZE;
                 int i = y * S + x;
-                float h = terrain(wx, wz);
-                float f = h, c = h, t = h, along = -1f;
-
-                Cave.query(wx, wz);
-                float cd = Cave.chamberDist(wx, wz);
-                // vaulted cross-sections: the ceiling curves all the way down to meet the floor,
-                // so walls and roof are one smooth surface (no corner to stair-step on the grid)
-                float gap = -1f, floor = 0f, ceil = 0f;
-                // the vault closes at k = 1; a band just beyond keeps the layers closed at the
-                // floor level so the ceiling layer meets the floor instead of leaving a sliver of air
-                if (Cave.along > 0.01f && Cave.along < len - 0.01f) {
-                    float hw = Cave.halfWidth(Cave.along) * 1.3f;
-                    float k = Cave.dist / hw;
-                    if (k < 1f + 1.2f / hw) {
-                        float kc = Math.min(k, 1f);
-                        float base = mouthFloor - 0.05f * Cave.along;
-                        float fT = base + 0.5f * kc * kc * kc * kc;
-                        float cT = k < 1f ? base + (3.7f + 0.25f * (float) Math.sin(Cave.along * 0.9f)) * (float) Math.sqrt(1f - k * k) : fT;
-                        cT = Math.max(cT, fT);
-                        if (cT - fT > gap) { gap = cT - fT; floor = fT; ceil = cT; along = Cave.along; }
-                    }
-                }
-                if (cd < Cave.CHAMBER_R + 1.2f) {
-                    float k = cd / Cave.CHAMBER_R, kc = Math.min(k, 1f);
-                    float fC = endFloor - 0.6f * (1f - kc * kc) + 0.6f * kc * kc * kc * kc;   // shallow bowl
-                    float cC = k < 1f ? endFloor + 8.0f * (float) Math.sqrt(1f - k * k) : fC; // dome
-                    cC = Math.max(cC, fC);
-                    if (cC - fC > gap) { gap = cC - fC; floor = fC; ceil = cC; along = len + 3f; }
-                }
-                if (gap >= 0f) {
-                    if (h - ceil >= 1.4f) {          // enough rock overhead: layered cell
-                        f = floor;
-                        c = ceil;
-                        t = h;
-                        if (gap > 0.05f) sCover = Math.min(sCover, along);
-                    } else if (gap > 0.05f) {        // open cutting leading to the mouth
-                        f = Math.min(h, floor);
-                        c = t = h;
-                        along = -1f;
-                    } else {
-                        along = -1f;
-                    }
-                } else {
-                    along = -1f;
-                }
-                fl[i] = q8(f);
-                ce[i] = q8(c);
-                tp[i] = q8(t);
-                al[i] = along;
+                float h = q8(terrain(wx, wz));
+                fl[i] = h;
+                ce[i] = h;
+                tp[i] = h;
+                op[i] = 1f;
             }
         }
-        Loading.set("Carving Hollow Hill", 0.09f);
-        // sky openness: fades over the first 14 m under the roof...
-        float[] raw = new float[S * S];
-        for (int i = 0; i < S * S; i++) {
-            boolean covered = tp[i] - ce[i] > 0.5f;
-            raw[i] = covered ? 1f - smooth(sCover - 2f, sCover + 14f, al[i]) : 1f;
-        }
-        // ...and bleeds a little into the surrounding rock, so the cave's walls share its darkness
-        final int R = 3;
-        for (int y = 0; y < S; y++)
-            for (int x = 0; x < S; x++) {
-                float m = raw[y * S + x];
-                for (int dy = -R; dy <= R; dy++)
-                    for (int dx = -R; dx <= R; dx++) {
-                        float o = raw[Math.floorMod(y + dy, S) * S + Math.floorMod(x + dx, S)];
-                        if (o < m) m = Math.min(m, o + 0.13f * (float) Math.sqrt(dx * dx + dy * dy));
-                    }
-                op[y * S + x] = Math.min(1f, m);
-            }
         hFloor = fl;
         hCeil = ce;
         hTop = tp;
@@ -665,7 +657,7 @@ final class WorldTextures {
                 }
 
                 // ---- cave floor in Hollow Hill: damp earth, grit and fallen stone
-                if (wx > 195f && wx < 266f && wz > 160f && wz < 216f) {
+                if (false && wx > 195f && wx < 266f && wz > 160f && wz < 216f) {     // now inside the volume
                     Cave.query(wx, wz);
                     float hwc = Cave.halfWidth(Cave.along) * 1.3f + 0.4f, cdc = Cave.chamberDist(wx, wz) - 0.4f;
                     float e1 = Cave.along > 0.01f && Cave.along < caveLen ? Cave.dist - hwc : 9f;

@@ -159,7 +159,8 @@ public final class DesktopMain {
         String pos = System.getenv("ERYNDOR_POS");             // testing: ERYNDOR_POS=x,z
         if (pos != null) {
             String[] p = pos.split(",");
-            renderer.teleport(Double.parseDouble(p[0]), Double.parseDouble(p[1]));
+            if (p.length > 2) renderer.teleport(Double.parseDouble(p[0]), Double.parseDouble(p[1]), Float.parseFloat(p[2]));
+            else renderer.teleport(Double.parseDouble(p[0]), Double.parseDouble(p[1]));
         }
         renderer.onSurfaceCreated(null, null);
         overlay = new Overlay();

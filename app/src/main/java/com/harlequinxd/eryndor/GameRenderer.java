@@ -33,7 +33,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private static final float MIN_HEADROOM = 1.95f;
     private static final float WALK_SPEED = 4.2f;      // m/s at full stick
     private static final float LOOK_SENS = 0.0065f;    // radians per dp
-    private static final int GROUND_CACHE_VERSION = 13;
+    private static final int GROUND_CACHE_VERSION = 14;
 
     private final Input input;
     private final SkyState sky;
@@ -70,6 +70,9 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private int treePrimTex, treeCellTex, treeIdxTex, leafAtlasTex, uploadedTreeVersion = -1;
     // first-person arms: colour / normal / height sheets (decoded off the GL thread)
     private int armColTex, armNrmTex, armHgtTex;
+    // terrain volume (tunnels, caves, overhangs): 3D RG8, distance + sky openness
+    private int volTex;
+    private java.nio.ByteBuffer volData;
     // ground texture sets, one array layer each (order = layer index in scene.frag):
     // colour, and normal map + height packed together; tiling, point sampled
     static final String[] SURFACES = {"grass", "cobble"};
@@ -117,7 +120,9 @@ final class GameRenderer implements GLSurfaceView.Renderer {
 
     private void buildWorld() {
         Loading.set("Waking the realm", 0.01f);
-        int[] heights = WorldTextures.heightTexture();             // shaping the land, carving Hollow Hill
+        int[] heights = WorldTextures.heightTexture();             // shaping the land
+        Voxels.build(cacheDir);                                     // hollowing the tunnels and caves
+        volData = Voxels.volumeRG();
         int[] ground = loadGround();                                // painting (or reading the saved world)
         Loading.set("Growing the trees", 0.81f);
         TreeLibrary lib = new TreeLibrary(cacheDir);
@@ -197,9 +202,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         surfColTex = GLUtil.textureArray(surfCol, surfSize);    // repeating, point sampled
         surfNHTex = GLUtil.textureArray(surfNH, surfSize);
         surfCol = surfNH = null;
+        volTex = GLUtil.texture3D(volData, Voxels.NX, Voxels.NY, Voxels.NZ);
+        volData = null;
         uploadTrees();
         Loading.set("Lighting the lanterns", 0.99f);
-        eyeY = Float.NaN;
+        eyeY = Float.isNaN(spawnFeet) ? Float.NaN : spawnFeet + EYE_HEIGHT;
         uploaded = true;
         lastNanos = System.nanoTime();
         Loading.set("Ready", 1f);
@@ -211,6 +218,15 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         px = x;
         pz = z;
     }
+
+    /** Move the player with the feet at height y (testing: inside tunnels). */
+    void teleport(double x, double z, float y) {
+        px = x;
+        pz = z;
+        spawnFeet = y;
+    }
+
+    private float spawnFeet = Float.NaN;
 
     /** Draw or sheathe the sword in the right hand. */
     void toggleSword() {
@@ -394,8 +410,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, detailTex);
         GLES20.glUniform1i(u(sceneProg, "uDetail"), 3);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE4);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, fernTex);
-        GLES20.glUniform1i(u(sceneProg, "uFerns"), 4);
+        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, volTex);
+        GLES20.glUniform1i(u(sceneProg, "uVol"), 4);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE5);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, matTex);
         GLES20.glUniform1i(u(sceneProg, "uMat"), 5);
@@ -550,7 +566,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         }
         float floor = groundAt(px, pz);
         float want = floor + EYE_HEIGHT;
-        float ceil = WorldTextures.ceilingAt(px, pz);
+        float ceil = Voxels.ceilingAbove(px, floor + 0.3, pz);
         if (want > ceil - 0.25f) want = ceil - 0.25f;
         eyeY = Float.isNaN(eyeY) ? want : eyeY + (want - eyeY) * Math.min(1f, dt * 14f);
         float target = mag > 0.02f ? mag : 0f;
@@ -562,8 +578,17 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     }
 
     /** Terrain plus fine relief (rocks, shrubs, walls) under a point. */
-    private static float groundAt(double x, double z) {
-        return WorldTextures.floorAt(x, z) + WorldTextures.detailAt(x, z);
+    /**
+     * The ground under you: the first rock surface below your feet (allowing a step up), so in a
+     * tunnel it's the tunnel floor and on a ridge it's the ridge. On the open-air ground the 2D
+     * relief (rocks, logs, walls) rides on top, as in the shader.
+     */
+    private float groundAt(double x, double z) {
+        float top = WorldTextures.floorAt(x, z);
+        double from = Float.isNaN(eyeY) ? top + 1.0 : eyeY - EYE_HEIGHT + 0.7;
+        float f = Voxels.floorBelow(x, from, z);
+        if (f > top - 0.8f) f = Math.max(f, top) + WorldTextures.detailAt(x, z);
+        return f;
     }
 
     /** Walk unless the ground ahead is too steep (a wall) or the rock overhead is too low. */
@@ -576,7 +601,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         float here = groundAt(px, pz);
         float ahead = groundAt(ax, az);
         if ((ahead - here) / 0.35f > MAX_SLOPE) return;
-        float ceil = WorldTextures.ceilingAt(ax, az);
+        float ceil = Voxels.ceilingAbove(ax, ahead + 0.3, az);
         if (ceil - ahead < MIN_HEADROOM) return;
         float[] tr = WorldTextures.trunkNear(ax, az);           // tree trunks are solid
         TreeLibrary lib = library;
