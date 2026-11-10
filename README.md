@@ -14,6 +14,15 @@ Hollowspire.
   fountain, the well and the standing stones. It is ray-marched per screen pixel with smooth
   (bilinear) heights, so detail is pixel-perfect columns of colour rather than cubes, and fades out
   past about 70 m. Big stones, rocks and shrubs block movement; grass and pebbles don't.
+- **Everything per pixel**: surface texture is computed for each screen pixel at the exact point
+  its ray hits (grass blades, soil grain and grit, stone speckle, wood grain, plus per-pixel
+  bumps); painted colours are blended smoothly so no texel squares show. Close to the camera
+  every grass blade has its own height. **Ferns are 3D**: an implicit shape (fronds that rise,
+  arch and droop, leaflets with gaps, air underneath) tested by each pixel's ray; no meshes, no
+  voxel grid.
+- **Loading screen**: title, a real progress bar and the stage being built (shaping the land,
+  carving Hollow Hill, painting meadows, planting ferns...). After the first run the world is
+  read back from a save, which is much quicker.
 - **The world**: a cobbled village with a plaza fountain and a well, a cart track running north to
   a stone bridge over a winding river, meadows with wildflowers, shrubs and mossy boulders, a
   ring of standing stones on a mound, fairy rings, and Hollow Hill to the east with a tunnel
@@ -44,5 +53,6 @@ over old ones. Locally: `gradle assembleDebug` (Gradle 8.14, JDK 17, Android SDK
 | `SkyState.java` | Time of day, sun, sky colours, weather blending, lightning |
 | `WorldTextures.java` | Ground colour, layered heightmap and cloud textures (pure Java) |
 | `Cave.java` | Hollow Hill cave layout (tunnel path, chamber) |
-| `ControlsView.java` | Title card, touch pad, swipe look, HUD buttons |
+| `ControlsView.java` | Loading screen, title card, touch pad, swipe look, HUD buttons |
+| `Loading.java` | World-building progress shared with the loading screen |
 | `assets/shaders/scene.frag` | Heightmap ray-march, lighting, water, sky, weather, dither |

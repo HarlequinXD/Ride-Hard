@@ -143,13 +143,8 @@ final class ControlsView extends View {
         int w = getWidth(), h = getHeight();
 
         if (!sky.worldReady) {
-            c.drawColor(Color.rgb(10, 12, 18));
-            drawTitle(c, w, h, 255);
-            Paint p = new Paint(hint);
-            p.setColor(Color.argb(170, 200, 210, 220));
-            p.setTextSize(13 * dp);
-            c.drawText("Painting the realm…", w / 2f, h * 0.78f, p);
-            postInvalidateDelayed(200);
+            drawLoading(c, w, h);
+            postInvalidateDelayed(50);
             return;
         }
         if (readyAt == 0) readyAt = System.currentTimeMillis();
@@ -182,6 +177,40 @@ final class ControlsView extends View {
         c.drawText(clock, btnTime.left - 12 * dp, btnTime.centerY() + 5 * dp, text);
 
         postInvalidateDelayed(moveId != -1 || lookId != -1 ? 16 : 500);
+    }
+
+    private Paint barPaint, barFill, stagePaint;
+    private final RectF bar = new RectF();
+    private float shownProgress;
+
+    /** Loading screen: title, a real progress bar and what is being built right now. */
+    private void drawLoading(Canvas c, int w, int h) {
+        if (barPaint == null) {
+            barPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            barPaint.setStyle(Paint.Style.STROKE);
+            barPaint.setStrokeWidth(1.5f * dp);
+            barPaint.setColor(Color.argb(200, 236, 205, 130));
+            barFill = new Paint(Paint.ANTI_ALIAS_FLAG);
+            barFill.setColor(Color.argb(230, 214, 176, 96));
+            stagePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            stagePaint.setTypeface(Typeface.create(Typeface.SERIF, Typeface.ITALIC));
+            stagePaint.setTextAlign(Paint.Align.CENTER);
+            stagePaint.setTextSize(14 * dp);
+            stagePaint.setColor(Color.argb(220, 200, 212, 222));
+        }
+        c.drawColor(Color.rgb(10, 12, 18));
+        drawTitle(c, w, h, 255);
+        float target = Loading.progress;
+        shownProgress += (target - shownProgress) * 0.35f;          // glide, never jump
+        float bw = Math.min(w * 0.55f, 420 * dp), bh = 10 * dp;
+        float by = h * 0.72f;
+        bar.set(w / 2f - bw / 2f, by, w / 2f + bw / 2f, by + bh);
+        RectF fill = new RectF(bar.left + 2 * dp, bar.top + 2 * dp,
+                bar.left + 2 * dp + (bar.width() - 4 * dp) * Math.max(0f, Math.min(1f, shownProgress)), bar.bottom - 2 * dp);
+        c.drawRoundRect(fill, 3 * dp, 3 * dp, barFill);
+        c.drawRoundRect(bar, 5 * dp, 5 * dp, barPaint);
+        String pct = Math.round(Math.min(1f, shownProgress) * 100f) + "%";
+        c.drawText(Loading.stage + "…   " + pct, w / 2f, by + bh + 26 * dp, stagePaint);
     }
 
     private long readyAt;

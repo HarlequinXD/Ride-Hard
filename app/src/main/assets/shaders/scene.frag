@@ -16,6 +16,8 @@ uniform sampler2D uGround;   // rgb = ground colour, a = 1 land / 0 open water
 uniform sampler2D uCloud;
 uniform sampler2D uHeight;   // r = floor, g = cave ceiling, b = rock top, a = sky openness
 uniform sampler2D uDetail;   // fine relief on the floor: grass, pebbles, shrubs, rocks, walls (0..3 m)
+uniform sampler2D uMat;      // material id per texel: 0 grass, 1 earth, 2 stone, 3 wood, 4 water, 5 plant
+uniform sampler2D uFerns;    // one optional fern per 4 m cell: offset xz, size, presence + rotation
 
 uniform vec2 uTanHalf;
 uniform float uYaw;
@@ -149,6 +151,86 @@ vec3 skyColor(vec3 d) {
     return sky;
 }
 
+// ---- per-pixel grass: individual blades computed at the exact point each ray reaches
+const float GFAR = 12.0;
+float grassBlades(vec2 xz) {
+    return 0.13 * pow(hash(floor(xz * 40.0)), 3.0) + 0.05 * vnoise(xz * 12.0);
+}
+
+// ---- 3D ferns, evaluated per pixel as an implicit shape (no geometry, no voxel grid)
+const float FERN_CELL = 4.0;
+const float FERN_FAR = 38.0;
+bool fernAt(vec3 p, out vec3 col, out float near) {
+    col = vec3(0.0);
+    near = 0.0;
+    vec2 cell = floor(p.xz / FERN_CELL);
+    vec4 f = texture2D(uFerns, (cell + 0.5) / 64.0);
+    if (f.a < 0.5) return false;
+    vec2 c = (cell + 0.25 + f.rg * 0.5) * FERN_CELL;
+    float L = 0.8 + 0.7 * f.b;
+    vec2 q = p.xz - c;
+    float r = length(q);
+    if (r > L + 0.3) return false;
+    float base = texture2D(uHeight, c / 256.0).r * HMAX + texture2D(uDetail, c / 256.0).r * DMAX - 0.04;
+    float H = 0.45 + 0.35 * f.b;
+    float y = p.y - base;
+    if (y < -0.1 || y > H + 0.25) return false;
+    near = 1.0;                                    // inside the fern's bounds: march finely here
+    if (r > L) return false;
+    const float N = 9.0;
+    float sector = 6.2831853 / N;
+    float ang = atan(q.y, q.x) + (f.a - 0.5) * 12.566;
+    float k = floor(ang / sector + 0.5);
+    float kk = mod(k, N);
+    float jit = (hash(vec2(kk, f.r * 97.0 + f.g * 31.0)) - 0.5) * 0.45;
+    float da = ang - (k + jit) * sector;
+    float lat = r * sin(da);
+    float lenK = 0.70 + 0.30 * hash(vec2(kk + 3.0, f.g * 53.0));
+    float s = r / (L * lenK);
+    if (s > 1.0) return false;
+    float al = abs(lat);
+    float w = 0.03 + 0.17 * sin(3.14159 * min(s * 1.1, 1.0));
+    if (al > w) return false;
+    float pin = fract(s * L * lenK * 10.0);
+    if (al > 0.025 && pin < 0.28) return false;    // gaps between the leaflets
+    float spine = H * (3.0 * s - 2.6 * s * s) * (0.85 + 0.3 * hash(vec2(kk, 9.0)));
+    float ly = spine - al * 0.7;                   // leaflets droop to the sides
+    if (abs(y - ly) > 0.035 + 0.025 * s) return false;
+    float leaf = hash(vec2(floor(s * L * lenK * 10.0), kk + f.r * 17.0));
+    col = vec3(0.19, 0.39, 0.11) * (0.70 + 0.45 * s) * (0.85 + 0.30 * leaf);
+    if (al < 0.022) col = vec3(0.30, 0.34, 0.13) * (0.75 + 0.40 * s);   // midrib
+    col *= 0.65 + 0.35 * clamp(y / H, 0.0, 1.0);
+    return true;
+}
+
+// ---- per-pixel surface texture: albedo multiplier (rgb) and a bump (xz) for each material
+vec3 microAlbedo(vec2 wp, float mid, out vec2 bump) {
+    vec3 m = vec3(1.0);
+    bump = vec2(0.0);
+    if (mid < 0.5 || mid > 4.5) {                  // grass and leafy plants
+        float b1 = vnoise(wp * vec2(34.0, 30.0)), b2 = hash(floor(wp * 48.0)), b3 = vnoise(wp * 7.0);
+        float l = 0.80 + 0.30 * (b1 - 0.5) * 2.0 * 0.6 + 0.20 * (b2 - 0.5) + 0.10 * (b3 - 0.5);
+        m = vec3(l * (1.0 + 0.14 * (b2 - 0.5)), l, l * (1.0 - 0.18 * (b2 - 0.5)));
+        bump = (vec2(vnoise(wp * 30.0 + 3.1), vnoise(wp * 30.0 + 7.7)) - 0.5) * 1.1;
+    } else if (mid < 1.5) {                        // earth: grain and tiny grit
+        float n1 = vnoise(wp * 22.0), sp = hash(floor(wp * 40.0));
+        float l = 0.88 + 0.22 * (n1 - 0.5) + (sp > 0.93 ? 0.22 : (sp < 0.05 ? -0.22 : 0.0));
+        m = vec3(l);
+        bump = (vec2(vnoise(wp * 25.0 + 1.3), vnoise(wp * 25.0 + 5.9)) - 0.5) * 0.7;
+    } else if (mid < 2.5) {                        // stone: fine grain and speckle
+        float n1 = vnoise(wp * 40.0), sp = hash(floor(wp * 70.0));
+        float l = 0.90 + 0.16 * (n1 - 0.5) + 0.10 * (sp - 0.5);
+        m = vec3(l * 0.99, l, l * 1.02);
+        bump = (vec2(vnoise(wp * 36.0 + 2.2), vnoise(wp * 36.0 + 8.8)) - 0.5) * 0.4;
+    } else if (mid < 3.5) {                        // wood: grain
+        float g1 = vnoise(wp * vec2(10.0, 70.0)) * 0.5 + vnoise(wp * vec2(70.0, 10.0)) * 0.5;
+        float l = 0.80 + 0.30 * (g1 - 0.5) * 2.0 * 0.6;
+        m = vec3(l);
+        bump = (vec2(vnoise(wp * 20.0), vnoise(wp * 20.0 + 4.0)) - 0.5) * 0.5;
+    }
+    return m;
+}
+
 float rockTex(vec3 p) {
     float n = vnoise(vec2(p.x + p.z, p.y) * 2.2) * 0.55 + vnoise(vec2(p.x - p.z, p.y * 3.0) * 5.0) * 0.30
             + hash(floor(vec2(p.x * 7.0 + p.z * 5.0, p.y * 8.0))) * 0.15;
@@ -168,16 +250,25 @@ void main() {
     // ---- march the layered heightmap: solid if below the floor, or inside the rock over a cave
     vec3 ro = uCam;
     float t = 0.05, prevT = 0.0, hitT = -1.0;
-    for (int i = 0; i < 230; i++) {
+    float isFern = 0.0;
+    vec3 fcol = vec3(0.0);
+    for (int i = 0; i < 260; i++) {
         vec3 p = ro + d * t;
         vec4 hm = texture2D(uHeight, p.xz / 256.0) * HMAX;
         float det = 0.0;
         if (t < DFAR) det = texture2D(uDetail, p.xz / 256.0).r * DMAX * detailFade(t);
+        if (t < GFAR && texture2D(uMat, p.xz / 256.0).r < 0.08)
+            det += grassBlades(p.xz) * smoothstep(GFAR, GFAR * 0.35, t);
+        float near = 0.0;
+        vec3 fc;
+        if (t < FERN_FAR && fernAt(p, fc, near)) { hitT = t; isFern = 1.0; fcol = fc; break; }
         if (p.y < hm.r + det || (p.y > hm.g && p.y < hm.b)) { hitT = t; break; }
         if (d.y > 0.0 && p.y > HMAX + DMAX) break;
         if (t > FAR) break;
         prevT = t;
-        t += 0.035 + t * 0.026;
+        float st = 0.035 + t * 0.026;
+        if (near > 0.5) st = min(st, 0.015 + t * 0.004);   // thin fronds need fine steps
+        t += st;
     }
     float kind = 0.0;                         // 0 ground/top surface, 1 cave ceiling, 2 rock face
     if (hitT > 0.0) {
@@ -185,15 +276,26 @@ void main() {
         for (int k = 0; k < 6; k++) {
             float m = 0.5 * (a + b);
             vec3 p = ro + d * m;
-            vec4 hm = texture2D(uHeight, p.xz / 256.0) * HMAX;
-            float det = texture2D(uDetail, p.xz / 256.0).r * DMAX * detailFade(m);
-            if (p.y < hm.r + det || (p.y > hm.g && p.y < hm.b)) b = m; else a = m;
+            bool solid;
+            if (isFern > 0.5) {
+                float nr;
+                vec3 fc;
+                solid = fernAt(p, fc, nr);
+                if (solid) fcol = fc;
+            } else {
+                vec4 hm = texture2D(uHeight, p.xz / 256.0) * HMAX;
+                float det = texture2D(uDetail, p.xz / 256.0).r * DMAX * detailFade(m);
+                if (m < GFAR && texture2D(uMat, p.xz / 256.0).r < 0.08)
+                    det += grassBlades(p.xz) * smoothstep(GFAR, GFAR * 0.35, m);
+                solid = p.y < hm.r + det || (p.y > hm.g && p.y < hm.b);
+            }
+            if (solid) b = m; else a = m;
         }
         hitT = b;
         vec3 pb = ro + d * b;                 // blocked by the underside of the rock over a cave?
         vec4 hb = texture2D(uHeight, pb.xz / 256.0) * HMAX;
         float detb = texture2D(uDetail, pb.xz / 256.0).r * DMAX * detailFade(b);
-        if (pb.y >= hb.r + detb && pb.y > hb.g && pb.y < hb.b && (pb.y - hb.g) < (hb.b - pb.y)) kind = 1.0;
+        if (isFern < 0.5 && pb.y >= hb.r + detb && pb.y > hb.g && pb.y < hb.b && (pb.y - hb.g) < (hb.b - pb.y)) kind = 1.0;
     }
     float hit = step(0.0, hitT);
     float T = hit > 0.5 ? hitT : FAR;
@@ -225,13 +327,25 @@ void main() {
     float steep = smoothstep(0.75, 0.45, nMacro.y);          // rock only on big slopes, not on shrubs
     if (kind > 0.5) steep = 1.0;
 
+    // per-pixel material texture and bump
+    float mid = floor(texture2D(uMat, wp / 256.0).r * 255.0 / 40.0 + 0.5);
+    vec2 bump;
+    vec3 micro = microAlbedo(wp, mid, bump);
+    float mf = smoothstep(30.0, 5.0, T) * (1.0 - useTop * 0.5);
+    micro = mix(vec3(1.0), micro, mf);
+    n = normalize(n + vec3(bump.x, 0.0, bump.y) * 0.45 * mf * (1.0 - steep));
+    if (isFern > 0.5) {
+        n = normalize(vec3(0.0, 1.0, 0.0) + vec3(hash(floor(wp * 30.0)) - 0.5, 0.0, hash(floor(wp * 30.0) + 3.0) - 0.5) * 0.6);
+        steep = 0.0;
+    }
+
     // sky openness: test a point nudged off the surface; if it sits under rock, use that cell's value
     vec3 q = hp + n * 0.35;
     vec4 hq = texture2D(uHeight, q.xz / 256.0);
     float under = step(q.y, hq.b * HMAX - 0.5);   // below the top of the rock here: cave, wall or cutting
     float open = mix(1.0, hq.a, under * hit);
 
-    float water = (1.0 - gt.a) * hit * (1.0 - steep);
+    float water = (1.0 - gt.a) * hit * (1.0 - steep) * (1.0 - isFern);
 
     // ---- one sky evaluation: the sky above, its mirror image in water below
     vec2 rip = vec2(vnoise(wp * 1.6 + uTime * 0.7), vnoise(wp * 1.6 - uTime * 0.55 + 7.0)) - 0.5;
@@ -252,7 +366,7 @@ void main() {
     vec3 lantern = vec3(1.0, 0.70, 0.40) * 1.6 / (1.0 + T * T * 0.09) * max(dot(n, -d), 0.25) * dark;
     light += lantern;
 
-    vec3 albedo = gt.rgb;
+    vec3 albedo = isFern > 0.5 ? fcol * (0.85 + 0.3 * hash(floor(wp * 60.0))) : gt.rgb * micro;
     vec3 rock = vec3(0.47, 0.45, 0.42) * rockTex(hp);
     rock = mix(rock, vec3(0.30, 0.36, 0.20) * rockTex(hp * 1.7), smoothstep(0.55, 0.85, n.y) * 0.5 * (1.0 - kind));
     albedo = mix(albedo, rock, steep);

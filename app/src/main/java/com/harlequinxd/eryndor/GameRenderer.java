@@ -29,7 +29,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private static final float MIN_HEADROOM = 1.95f;
     private static final float WALK_SPEED = 4.2f;      // m/s at full stick
     private static final float LOOK_SENS = 0.0065f;    // radians per dp
-    private static final int GROUND_CACHE_VERSION = 7;
+    private static final int GROUND_CACHE_VERSION = 10;
 
     private final Input input;
     private final SkyState sky;
@@ -37,7 +37,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private final File cacheDir;
 
     private int sceneProg, blitProg;
-    private int groundTex, cloudTex, heightTex, detailTex;
+    private int groundTex, cloudTex, heightTex, detailTex, fernTex, matTex;
     private int fbo, fboTex, fboW, fboH, scrW, scrH;
     private FloatBuffer quad;
     private final HashMap<String, Integer> sceneU = new HashMap<>(), blitU = new HashMap<>();
@@ -62,16 +62,25 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     public void onSurfaceCreated(GL10 unused, EGLConfig config) {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glDisable(GLES20.GL_CULL_FACE);
+        Loading.set("Waking the realm", 0.01f);
         String vs = GLUtil.asset(assets, "shaders/fullscreen.vert");
         sceneProg = GLUtil.program(vs, GLUtil.asset(assets, "shaders/scene.frag"));
         blitProg = GLUtil.program(vs, GLUtil.asset(assets, "shaders/blit.frag"));
         sceneU.clear();
         blitU.clear();
 
-        groundTex = GLUtil.texture(loadGround(), WorldTextures.GROUND_SIZE, true);
-        cloudTex = GLUtil.texture(WorldTextures.clouds(), WorldTextures.CLOUD_SIZE, false);
-        heightTex = GLUtil.texture(WorldTextures.heightTexture(), WorldTextures.HEIGHT_SIZE, false, true);
+        int[] heights = WorldTextures.heightTexture();             // shaping the land, carving Hollow Hill
+        int[] ground = loadGround();                                // painting (or reading the saved world)
+        Loading.set("Uploading the land", 0.84f);
+        groundTex = GLUtil.texture(ground, WorldTextures.GROUND_SIZE, false);
+        heightTex = GLUtil.texture(heights, WorldTextures.HEIGHT_SIZE, false, true);
+        Loading.set("Uploading the fine relief", 0.89f);
         detailTex = GLUtil.luminance(WorldTextures.detail(), WorldTextures.GROUND_SIZE);
+        matTex = GLUtil.luminance(WorldTextures.materials(), WorldTextures.GROUND_SIZE, true);
+        fernTex = GLUtil.cells(WorldTextures.ferns(), WorldTextures.FERN_GRID);
+        Loading.set("Gathering the clouds", 0.94f);
+        cloudTex = GLUtil.texture(WorldTextures.clouds(), WorldTextures.CLOUD_SIZE, false);
+        Loading.set("Lighting the lanterns", 0.98f);
         eyeY = Float.NaN;
 
         float[] q = {-1, -1, 1, -1, -1, 1, 1, 1};
@@ -80,6 +89,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         fbo = 0;
         fboW = fboH = 0;
         lastNanos = System.nanoTime();
+        Loading.set("Ready", 1f);
         sky.worldReady = true;
     }
 
@@ -89,17 +99,26 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         File f = new File(cacheDir, "ground_v" + GROUND_CACHE_VERSION + ".bin");
         File[] old = cacheDir.listFiles((dir, name) -> name.startsWith("ground_v") && !name.equals(f.getName()));
         if (old != null) for (File o : old) o.delete();
-        if (f.length() == n * 5L) {
+        int fb = WorldTextures.FERN_GRID * WorldTextures.FERN_GRID * 4;
+        if (f.length() == n * 6L + fb) {
+            Loading.set("Reading the saved world", 0.12f);
             try (FileInputStream in = new FileInputStream(f)) {
-                byte[] bytes = new byte[n * 5];
+                byte[] bytes = new byte[n * 6 + fb];
                 int off = 0, r;
-                while (off < bytes.length && (r = in.read(bytes, off, bytes.length - off)) > 0) off += r;
+                while (off < bytes.length && (r = in.read(bytes, off, Math.min(1 << 20, bytes.length - off))) > 0) {
+                    off += r;
+                    Loading.within(0.12f, 0.80f, off / (float) bytes.length);
+                }
                 if (off == bytes.length) {
                     int[] px = new int[n];
                     ByteBuffer.wrap(bytes, 0, n * 4).asIntBuffer().get(px);
                     byte[] det = new byte[n];
                     System.arraycopy(bytes, n * 4, det, 0, n);
-                    WorldTextures.setCached(px, det);
+                    byte[] mat = new byte[n];
+                    System.arraycopy(bytes, n * 5, mat, 0, n);
+                    byte[] fern = new byte[fb];
+                    System.arraycopy(bytes, n * 6, fern, 0, fb);
+                    WorldTextures.setCached(px, det, fern, mat);
                     return px;
                 }
             } catch (Exception ignored) {
@@ -107,11 +126,16 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         }
         int[] px = WorldTextures.ground();
         byte[] det = WorldTextures.detail();
+        byte[] fern = WorldTextures.ferns();
+        byte[] mat = WorldTextures.materials();
+        Loading.set("Saving the world for next time", 0.81f);
         try (FileOutputStream out = new FileOutputStream(f)) {
-            ByteBuffer bb = ByteBuffer.allocate(n * 5);
+            ByteBuffer bb = ByteBuffer.allocate(n * 6 + fb);
             bb.asIntBuffer().put(px);
             bb.position(n * 4);
             bb.put(det);
+            bb.put(mat);
+            bb.put(fern);
             out.write(bb.array());
         } catch (Exception ignored) {
         }
@@ -179,6 +203,12 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE3);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, detailTex);
         GLES20.glUniform1i(u(sceneProg, "uDetail"), 3);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE4);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, fernTex);
+        GLES20.glUniform1i(u(sceneProg, "uFerns"), 4);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE5);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, matTex);
+        GLES20.glUniform1i(u(sceneProg, "uMat"), 5);
 
         float tanY = (float) Math.tan(FOV_Y / 2);
         GLES20.glUniform2f(u(sceneProg, "uTanHalf"), tanY * fboW / fboH, tanY);
