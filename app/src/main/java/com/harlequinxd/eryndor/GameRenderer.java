@@ -4,6 +4,7 @@ import android.content.res.AssetManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.opengl.GLES20;
+import android.opengl.GLES30;
 import android.opengl.GLSurfaceView;
 
 import java.io.File;
@@ -69,10 +70,12 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private int treePrimTex, treeCellTex, treeIdxTex, leafAtlasTex, uploadedTreeVersion = -1;
     // first-person arms: colour / normal / height sheets (decoded off the GL thread)
     private int armColTex, armNrmTex, armHgtTex;
-    // grass texture set: colour, and normal map + height packed together (tiling, point sampled)
-    private int grassColTex, grassNHTex;
-    private int[][] grassData;
-    private int grassSize;
+    // ground texture sets, one array layer each (order = layer index in scene.frag):
+    // colour, and normal map + height packed together; tiling, point sampled
+    static final String[] SURFACES = {"grass", "cobble"};
+    private int surfColTex, surfNHTex;
+    private int[][] surfCol, surfNH;
+    private int surfSize;
     private int[][] armData;
     private int[] armW = new int[3], armH = new int[3];
     private final ArmRig arms = new ArmRig();
@@ -150,16 +153,20 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             b.recycle();
         }
         armData = ad;
-        int[][] gd = new int[2][];
-        String[] grass = {"grass/grass_col.png", "grass/grass_nh.png"};
-        for (int i = 0; i < 2; i++) {
-            Bitmap b = readBitmap(grass[i]);
-            grassSize = b.getWidth();
-            gd[i] = new int[grassSize * grassSize];
-            b.getPixels(gd[i], 0, grassSize, 0, 0, grassSize, grassSize);
-            b.recycle();
+        int ns = SURFACES.length;
+        int[][] sc = new int[ns][], sn = new int[ns][];
+        for (int i = 0; i < ns; i++) {
+            for (int k = 0; k < 2; k++) {
+                Bitmap b = readBitmap("surfaces/" + SURFACES[i] + (k == 0 ? "_col.png" : "_nh.png"));
+                surfSize = b.getWidth();
+                int[] px = new int[surfSize * surfSize];
+                b.getPixels(px, 0, surfSize, 0, 0, surfSize, surfSize);
+                b.recycle();
+                if (k == 0) sc[i] = px; else sn[i] = px;
+            }
         }
-        grassData = gd;
+        surfCol = sc;
+        surfNH = sn;
         Loading.set("Gathering the clouds", 0.83f);
         cloudData = WorldTextures.clouds();
         heightData = heights;
@@ -187,9 +194,9 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         armNrmTex = GLUtil.atlas(armData[1], armW[1], armH[1]);
         armHgtTex = GLUtil.atlas(armData[2], armW[2], armH[2], false);   // shape: stays smooth
         armData = null;
-        grassColTex = GLUtil.texture(grassData[0], grassSize, true);    // repeating, point sampled
-        grassNHTex = GLUtil.texture(grassData[1], grassSize, true);
-        grassData = null;
+        surfColTex = GLUtil.textureArray(surfCol, surfSize);    // repeating, point sampled
+        surfNHTex = GLUtil.textureArray(surfNH, surfSize);
+        surfCol = surfNH = null;
         uploadTrees();
         Loading.set("Lighting the lanterns", 0.99f);
         eyeY = Float.NaN;
@@ -424,8 +431,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         bindTex(11, armColTex, "uArmCol");
         bindTex(12, armNrmTex, "uArmNrm");
         bindTex(13, armHgtTex, "uArmHgt");
-        bindTex(14, grassColTex, "uGrassCol");
-        bindTex(15, grassNHTex, "uGrassNH");
+        bindTexArray(14, surfColTex, "uSurfCol");
+        bindTexArray(15, surfNHTex, "uSurfNH");
         GLES20.glUniformMatrix3fv(u(sceneProg, "uArmRot"), 2, false, arms.rot, 0);
         GLES20.glUniform3fv(u(sceneProg, "uArmPos"), 2, arms.pos, 0);
         GLES20.glUniform4fv(u(sceneProg, "uFing"), 10, arms.fingers, 0);
@@ -527,6 +534,12 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         }
         px = nx;
         pz = nz;
+    }
+
+    private void bindTexArray(int unit, int tex, String name) {
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + unit);
+        GLES20.glBindTexture(GLES30.GL_TEXTURE_2D_ARRAY, tex);
+        GLES20.glUniform1i(u(sceneProg, name), unit);
     }
 
     private void bindTex(int unit, int tex, String name) {

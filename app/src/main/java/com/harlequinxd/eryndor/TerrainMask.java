@@ -12,7 +12,7 @@ final class TerrainMask {
     static final int[] PALETTE = {
             0x2EB82E,   // 0 grass        green
             0x8C5A28,   // 1 earth / dirt brown
-            0x808080,   // 2 stone        grey
+            0x808080,   // 2 stone        grey (cobblestone road texture set)
             0x4A2810,   // 3 wood         dark brown
             0x1E5AFF,   // 4 water        blue
             0x0F5A28,   // 5 plants       dark green

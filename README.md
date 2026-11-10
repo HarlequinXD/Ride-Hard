@@ -42,16 +42,18 @@ Hollowspire.
 
   | Colour | Hex | Texture |
   |---|---|---|
-  | green | `#2EB82E` | grass (the grass texture set) |
+  | green | `#2EB82E` | grass (texture set) |
   | brown | `#8C5A28` | earth / dirt |
-  | grey | `#808080` | stone |
+  | grey | `#808080` | cobblestone road (texture set) |
   | dark brown | `#4A2810` | wood |
   | blue | `#1E5AFF` | water |
   | dark green | `#0F5A28` | plants |
 
   Delete the file to go back to the generated layout; `TerrainMaskExport` writes a fresh one.
-- **Grass texture set**: tiling colour, normal map and height map (`tools/build_grass.py` makes
-  them seamless and packs normal + height). Grass shows the photo's own colour, lit by its normal
+- **Ground texture sets** (grass, cobblestone road): tiling colour, normal map and height map,
+  one texture-array layer each. `tools/build_surface.py name colour normal height out_dir` makes a
+  set seamless (a cheapest-path cut through each border band, following the mortar or low ground,
+  so stones don't ghost) and packs normal + height. Grass shows the photo's own colour, lit by its normal
   map, point sampled, with tree shadows on top; two placements, one turned and larger, are mixed
   per pixel by a dithered noise so the tile doesn't repeat visibly. Small detail comes only from
   the textures (no grass bumps in the terrain).

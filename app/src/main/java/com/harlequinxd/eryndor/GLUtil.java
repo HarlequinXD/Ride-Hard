@@ -79,6 +79,27 @@ final class GLUtil {
         return t[0];
     }
 
+    /** Square ARGB layers as one 2D texture array: repeating, mipmapped, point sampled. */
+    static int textureArray(int[][] layers, int size) {
+        ByteBuffer bb = ByteBuffer.allocateDirect(size * size * 4 * layers.length).order(ByteOrder.nativeOrder());
+        for (int[] layer : layers) {
+            for (int c : layer) bb.put((byte) (c >> 16)).put((byte) (c >> 8)).put((byte) c).put((byte) (c >>> 24));
+        }
+        bb.position(0);
+        int[] t = new int[1];
+        GLES20.glGenTextures(1, t, 0);
+        GLES20.glBindTexture(GLES30.GL_TEXTURE_2D_ARRAY, t[0]);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES30.glTexImage3D(GLES30.GL_TEXTURE_2D_ARRAY, 0, GLES30.GL_RGBA8, size, size, layers.length, 0,
+                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, bb);
+        GLES20.glGenerateMipmap(GLES30.GL_TEXTURE_2D_ARRAY);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST_MIPMAP_NEAREST);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_REPEAT);
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_REPEAT);
+        return t[0];
+    }
+
     /** Leaf sheet: RGBA, mipmapped, clamped, point sampled. */
     static int atlas(int[] argb, int w, int h) {
         return atlas(argb, w, h, true);
