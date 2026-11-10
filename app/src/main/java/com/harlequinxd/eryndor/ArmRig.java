@@ -180,10 +180,16 @@ final class ArmRig {
             float drift = (float) Math.sin(time * (arm == 0 ? 1.7f : 1.3f) + arm);
             for (int f = 0; f < 5; f++) {
                 float ang = RELAXED[f] * (1f + 0.10f * drift + 0.30f * walk);
-                fingerK[arm * 5 + f] = ang / ArmFingers.LENGTH[arm * 5 + f];
+                fingerK[arm * 5 + f] = ang / ArmFingers.LENGTH[f];
             }
         }
         System.arraycopy(sword ? gripFingers : ArmFingers.PIVOT_DIR, 0, fingers, 0, 20);
+        for (int f = 0; f < 5; f++) {          // the left hand is the right one mirrored (one voxel hand)
+            fingers[20 + f * 4] = ArmFingers.PIVOT_DIR[f * 4];
+            fingers[20 + f * 4 + 1] = -ArmFingers.PIVOT_DIR[f * 4 + 1];
+            fingers[20 + f * 4 + 2] = ArmFingers.PIVOT_DIR[f * 4 + 2];
+            fingers[20 + f * 4 + 3] = -ArmFingers.PIVOT_DIR[f * 4 + 3];
+        }
         if (sword) {                       // right hand closed around the grip
             for (int f = 1; f < 5; f++) fingerK[f] = 1f / GRIP_WRAP;
             fingerK[0] = THUMB_CURL / ArmFingers.LENGTH[0];

@@ -49,13 +49,17 @@ Hollowspire.
   and two colours. Nothing is a mesh: every pixel's ray walks the 16 m tree cells, steps through
   each species' zone grid and tests the capsules and leaf cards inside. Bark has 4 textures.
   Shadows on the ground are cast from the real branches and leaves.
-- **First-person arms, per pixel**: smooth distance-field arms traced per pixel: a dark oiled
-  leather bracer with stitching, two straps and iron buckles over each forearm, a linen wrap at
-  the wrist, then bare hands with a padded, slightly cupped palm, knuckle ridges, finger joints and
-  fingernails. Each finger (and the thumb) has its own knuckle and curls on its own: a relaxed hand
-  that breathes and tightens as you walk, and the right hand closes around the pickaxe's handle.
-  The arms bob with your steps and lag a little when you turn. (They no longer come from images,
-  so there are no ragged, spiky edges.)
+- **First-person hands, voxels traced per pixel**: the hands and forearms are sculpted in
+  `tools/build_hands.py` and baked into voxels: signed distances on a 1.9 mm grid that the shader
+  blends trilinearly and sphere-traces per pixel (smooth, no cubes), with one distance channel for
+  the palm and forearm and one per finger, plus a colour and material volume. Sculpted detail: a
+  padded palm with thenar and hypothenar pads and the three palm lines, knuckles, tendons fanning
+  to the knuckles and veins on the back of the hand, jointed fingers with pads, joint creases,
+  knuckle wrinkles and fingernails with pale tips; a dark leather bracer with two straps, iron
+  buckles and stitched seams, and a wound linen wrap at the wrist. Every finger curls on its own:
+  each sample point is unbent around that finger's knuckle before it is looked up, so the hands
+  relax, breathe, tighten as you walk and close round the pickaxe handle. The left hand is the
+  same data mirrored. Re-sculpt with `python3 tools/build_hands.py app/src/main/assets/hands`.
 - **Physically based rendering**: one shading function for the ground, trees, arms and pickaxe:
   Lambert diffuse plus Cook-Torrance specular (GGX, Smith/Schlick-GGX, Schlick Fresnel) from the
   sun, the sky as hemisphere ambient and as a roughness-blurred reflection (split-sum with an

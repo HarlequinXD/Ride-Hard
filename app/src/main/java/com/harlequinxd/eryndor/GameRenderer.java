@@ -70,7 +70,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     volatile TreeLibrary library;
     private int treePrimTex, treeCellTex, treeIdxTex, leafAtlasTex, uploadedTreeVersion = -1;
     // first-person arms: colour / normal / height sheets (decoded off the GL thread)
-    private int armColTex, armNrmTex, armHgtTex;
+    // first-person hands as voxels (tools/build_hands.py): two distance volumes and a colour volume
+    private int handATex, handBTex, handCTex;
+    private java.nio.ByteBuffer handA, handB, handC;
+    private int handNx, handNy, handNz;
+    private float handCell, handX0, handY0, handZ0;
     // terrain volume (tunnels, caves, overhangs): 3D RG8, distance + sky openness
     private int volTex;
     // ground texture sets, one array layer each (order = layer index in scene.frag):
@@ -80,8 +84,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private int surfColTex, surfNHTex;
     private int[][] surfCol, surfNH;
     private int surfSize;
-    private int[][] armData;
-    private int[] armW = new int[3], armH = new int[3];
     private final ArmRig arms = new ArmRig();
     private final float[] treeMeta = new float[TreeLibrary.SLOTS * TreeLibrary.META * 4];
 
@@ -127,18 +129,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         streamer.lib = lib;
         Loading.set("Raising the land around you", 0.06f);
         streamer.loadAll(px, pz, 0.06f, 0.80f);
-        Loading.set("Shaping your arms", 0.825f);
-        String[] sheets = {"arms/arm_col.png", "arms/arm_nrm.png", "arms/arm_hgt.png"};
-        int[][] ad = new int[3][];
-        for (int i = 0; i < 3; i++) {
-            Bitmap b = readBitmap(sheets[i]);
-            armW[i] = b.getWidth();
-            armH[i] = b.getHeight();
-            ad[i] = new int[armW[i] * armH[i]];
-            b.getPixels(ad[i], 0, armW[i], 0, 0, armW[i], armH[i]);
-            b.recycle();
-        }
-        armData = ad;
+        Loading.set("Shaping your hands", 0.825f);
+        loadHands();
         int ns = SURFACES.length;
         int[][] sc = new int[ns][], sn = new int[ns][];
         for (int i = 0; i < ns; i++) {
@@ -175,10 +167,10 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         treeTex = GLUtil.cells(WorldTextures.treeWin, WorldTextures.TREE_GRID);
         cloudTex = GLUtil.texture(cloudData, WorldTextures.CLOUD_SIZE, false);
         leafAtlasTex = GLUtil.atlas(LeafAtlas.build(), LeafAtlas.W, LeafAtlas.H);
-        armColTex = GLUtil.atlas(armData[0], armW[0], armH[0]);
-        armNrmTex = GLUtil.atlas(armData[1], armW[1], armH[1]);
-        armHgtTex = GLUtil.atlas(armData[2], armW[2], armH[2], false);   // shape: stays smooth
-        armData = null;
+        handATex = GLUtil.texture3D(handA, handNx, handNy, handNz, GLES30.GL_RGBA8, GLES20.GL_RGBA, true);
+        handBTex = GLUtil.texture3D(handB, handNx, handNy, handNz, GLES30.GL_RG8, GLES30.GL_RG, true);
+        handCTex = GLUtil.texture3D(handC, handNx, handNy, handNz, GLES30.GL_RGBA8, GLES20.GL_RGBA, true);
+        handA = handB = handC = null;
         surfColTex = GLUtil.textureArray(surfCol, surfSize);    // repeating, point sampled
         surfNHTex = GLUtil.textureArray(surfNH, surfSize);
         surfCol = surfNH = null;
@@ -391,9 +383,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(u(sceneProg, "uPitch"), camPitch);
         GLES20.glUniform4f(u(sceneProg, "uPreview"), pvX, pvY, pvZ, slot >= 0 ? slot : -1f);
         GLES20.glUniform1f(u(sceneProg, "uPreviewYaw"), previewYaw);
-        bindTex(11, armColTex, "uArmCol");
-        bindTex(12, armNrmTex, "uArmNrm");
-        bindTex(13, armHgtTex, "uArmHgt");
+        bindTex3D(11, handATex, "uHandA");
+        bindTex3D(12, handBTex, "uHandB");
+        bindTex3D(13, handCTex, "uHandC");
+        GLES20.glUniform3f(u(sceneProg, "uHandO"), handX0 - handCell * 0.5f, handY0 - handCell * 0.5f, handZ0 - handCell * 0.5f);
+        GLES20.glUniform3f(u(sceneProg, "uHandS"), handNx * handCell, handNy * handCell, handNz * handCell);
         bindTexArray(14, surfColTex, "uSurfCol");
         bindTexArray(15, surfNHTex, "uSurfNH");
         GLES20.glUniformMatrix3fv(u(sceneProg, "uArmRot"), 2, false, arms.rot, 0);
@@ -641,6 +635,43 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         }
         px = nx;
         pz = nz;
+    }
+
+    private void bindTex3D(int unit, int tex, String name) {
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + unit);
+        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, tex);
+        GLES20.glUniform1i(u(sceneProg, name), unit);
+    }
+
+    /** Read the voxel hands: header, then the two distance volumes and the colour volume. */
+    private void loadHands() {
+        try (java.io.DataInputStream in = new java.io.DataInputStream(
+                new java.util.zip.GZIPInputStream(assets.open("hands/hands.bin.gz"), 1 << 16))) {
+            byte[] h = new byte[28];
+            in.readFully(h);
+            ByteBuffer hb = ByteBuffer.wrap(h).order(ByteOrder.LITTLE_ENDIAN);
+            handNx = hb.getInt();
+            handNy = hb.getInt();
+            handNz = hb.getInt();
+            handCell = hb.getFloat();
+            handX0 = hb.getFloat();
+            handY0 = hb.getFloat();
+            handZ0 = hb.getFloat();
+            int n = handNx * handNy * handNz;
+            handA = readDirect(in, n * 4);
+            handB = readDirect(in, n * 2);
+            handC = readDirect(in, n * 4);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("missing hands/hands.bin.gz", e);
+        }
+    }
+
+    private static ByteBuffer readDirect(java.io.DataInputStream in, int n) throws java.io.IOException {
+        byte[] b = new byte[n];
+        in.readFully(b);
+        ByteBuffer bb = ByteBuffer.allocateDirect(n).order(ByteOrder.nativeOrder());
+        bb.put(b).position(0);
+        return bb;
     }
 
     private void bindTexArray(int unit, int tex, String name) {

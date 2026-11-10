@@ -27,9 +27,11 @@ uniform sampler2D uLeafAtlas; // 8 leaf shapes, rgb detail + alpha outline
 uniform vec4 uTreeMeta[60];   // 6 per species: min+gx, max+gy, cellBase gz bark halfWidth, leafA+trunkR, leafB, bark+height
 uniform vec4 uPreview;        // Tree Builder: xyz base position, w = species slot (-1 = off)
 uniform float uPreviewYaw;
-uniform sampler2D uArmCol;    // first-person arms: colour, back view rows 0-351, palm view 352-703
-uniform sampler2D uArmNrm;    // same layout: arm-local normals from the normal map
-uniform sampler2D uArmHgt;    // r = top (back of hand) height, g = bottom (palm) height
+uniform highp sampler3D uHandA;  // voxel hand (tools/build_hands.py): palm+arm, thumb, index, middle distances
+uniform highp sampler3D uHandB;  //   ring, little finger distances
+uniform highp sampler3D uHandC;  //   colour, material
+uniform vec3 uHandO;             //   grid origin (arm units, half a cell before the first centre)
+uniform vec3 uHandS;             //   grid size (arm units)
 uniform mat3 uArmRot[2];      // arm-local -> camera space (0 right arm, 1 left arm)
 uniform vec3 uArmPos[2];      // arm-local origin (the shoulder end) in camera space, metres
 uniform vec4 uFing[10];       // per finger (right arm then left, thumb first): knuckle u, z, direction u, z
@@ -655,7 +657,6 @@ vec3 giAmbient(vec3 p, vec3 n, float t) {
 // finger's knuckle axis and tested against the straight finger). No image, so no ragged edges.
 const float ARM_S = 0.00125;      // metres per grid unit
 const float ARM_X0 = 150.0;       // nearest part of the arm drawn (the rest is behind the camera)
-const float FLEN[10] = float[10](41.0, 67.8, 67.8, 65.7, 55.1, 41.2, 66.1, 65.2, 62.6, 53.9);
 
 float smin(float a, float b, float k) {
     float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
@@ -687,130 +688,83 @@ vec3 fingerRest(vec3 p, int i, int f, out float th) {
     return vec3(xz.x, y, xz.y);
 }
 
-// x = distance (grid units), y = material: 0 skin, 1 leather bracer, 2 linen wrap, 3 nail;
-// part = 0 arm and palm, 1..5 finger; along = 0..1 along that finger
-vec2 armSdf(vec3 p, int i, out int part, out float along) {
+// The hand and forearm as voxels (tools/build_hands.py): signed distances on a 1.9 mm grid, one
+// channel for the palm and forearm and one per finger (straight), plus colour and material. A
+// sample point is tested against the palm channel as it is, and against each finger's channel
+// after being unbent around that finger's knuckle, so every finger curls on its own. The left hand
+// is the same data mirrored.
+vec3 handTex(vec3 q, int i) {
+    if (i == 1) q.z = -q.z;
+    return (q - uHandO) / uHandS;
+}
+
+// distance (grid units) to arm i, the part that is nearest (0 palm and arm, 1..5 finger) and the
+// rest-pose point on it
+float handDist(vec3 p, int i, out int part, out vec3 rq) {
+    vec3 tc = handTex(p, i);
+    float outside = length(max(abs(tc - 0.5) - 0.5, 0.0) * uHandS);
+    float d = outside > 0.0 ? outside + 16.0 : textureLod(uHandA, tc, 0.0).r * 32.0 - 16.0;
+    float best = d;
     part = 0;
-    along = 0.0;
-    // forearm under a leather bracer (a little flattened), the linen wrap at the wrist
-    float h;
-    vec3 pf = p * vec3(1.0, 1.18, 1.0);
-    float arm = sdCone(pf, vec3(140.0, 0.0, 0.0), vec3(352.0, 0.0, 0.0), 41.0, 33.0, h) / 1.18;
-    vec2 r = vec2(arm, 1.0);
-    float wrap = sdCone(pf, vec3(346.0, 0.0, 0.0), vec3(384.0, -1.0, 0.0), 32.0, 28.0, h) / 1.18;
-    wrap -= 1.2 * sin(p.x * 0.55 + atan(p.y, p.z) * 2.0);          // wound strips
-    if (wrap < r.x) r = vec2(wrap, 2.0);
-    // the hand: wrist into a padded palm that widens to the knuckles
-    vec4 Fi = uFing[i * 5 + 1], Fl = uFing[i * 5 + 4];
-    float zc = 0.5 * (Fi.y + Fl.y), hw = 0.5 * abs(Fi.y - Fl.y);
-    vec3 pp = p - vec3(0.0, -1.0, zc);
-    float palm = sdCone(pp * vec3(1.0, 1.0, 0.62), vec3(372.0, 0.0, 0.0), vec3(Fi.x - 12.0, 2.0, 0.0), 22.0, 15.0, h);
-    palm = max(palm, abs(pp.y + 0.03 * (pp.z * pp.z) / max(hw, 1.0)) - 15.0);     // flat, a little cupped
-    palm = smin(palm, length(max(abs(pp - vec3(410.0, -3.0, 0.0)) - vec3(30.0, 6.0, hw * 0.75), 0.0)) - 10.0, 10.0);
-    float hand = smin(sdCone(pf, vec3(366.0, 0.0, zc * 0.5), vec3(392.0, 0.0, zc * 0.8), 27.0, 25.0, h) / 1.18, palm, 12.0);
-    // the knuckles: a soft ridge through the finger roots
-    for (int f = 1; f < 5; f++) {
-        vec4 F = uFing[i * 5 + f];
-        hand = smin(hand, length(p - vec3(F.x - 4.0, 1.5, F.y)) - 12.0, 7.0);
-    }
-    if (hand < r.x + 6.0) r = vec2(smin(r.x, hand, 6.0), hand < r.x ? 0.0 : r.y);
-    // fingers, thumb first
+    rq = p;
     for (int f = 0; f < 5; f++) {
         float th;
         vec3 q = fingerRest(p, i, f, th);
-        vec4 F = uFing[i * 5 + f];
-        float L = FLEN[i * 5 + f] + (f == 0 ? 6.0 : 4.0);
-        vec3 base = vec3(F.x, 0.0, F.y), dir = vec3(F.z, 0.0, F.w);
-        float r0 = f == 0 ? 11.5 : (f == 4 ? 8.6 : 9.8), r1 = r0 * 0.78;
-        float hf;
-        float fd = sdCone(q, base - dir * 10.0, base + dir * (L - r1), r0, r1, hf);
-        // knuckle swellings at the two finger joints
-        float joint = abs(hf - 0.40) < 0.07 || abs(hf - 0.72) < 0.06 ? 0.8 : 0.0;
-        fd -= joint;
-        if (f == 0) {                                           // the thumb's root in the palm
-            float hm;
-            vec3 tb = vec3(378.0, -4.0, zc + (F.y - zc) * 0.45);
-            fd = smin(fd, sdCone(p, tb, base, 15.0, 12.0, hm), 8.0);
-        }
-        if (fd < r.x) {
-            part = f + 1;
-            along = hf;
-            // the nail: on the back of the last joint
-            vec3 tipC = base + dir * (L - r1);
-            bool nail = hf > 0.80 && q.y > r1 * 0.45 && f > 0 || (f == 0 && hf > 0.78 && q.y > r1 * 0.3);
-            r = vec2(r.x < fd + 4.0 ? smin(r.x, fd, 3.0) : fd, nail ? 3.0 : 0.0);
-        }
+        vec3 tq = handTex(q, i);
+        if (any(greaterThan(abs(tq - 0.5), vec3(0.5)))) continue;
+        float df = (f < 3 ? textureLod(uHandA, tq, 0.0)[f + 1] : textureLod(uHandB, tq, 0.0)[f - 3]) * 32.0 - 16.0;
+        if (df < best) { best = df; part = f + 1; rq = q; }
+        d = smin(d, df, 1.5);
     }
-    return r;
+    return d;
 }
 
-// returns distance in metres along the camera ray (or -1), the material hit, the hit point (grid)
-// and how far along a finger it is (0 if not on one)
+// returns distance in metres along the camera ray (or -1), the part hit, the hit point (arm grid)
 float traceArm(int i, vec3 dc, out int part, out vec3 hq, out float hth) {
     mat3 Rt = transpose(uArmRot[i]);
     vec3 ro = Rt * (-uArmPos[i]) / ARM_S;
     vec3 rd = Rt * dc / ARM_S;
-    vec3 bmin = vec3(ARM_X0, -100.0, -95.0), bmax = vec3(560.0, 60.0, 95.0);
+    vec3 bmin = vec3(ARM_X0, -50.0, -98.0), bmax = vec3(560.0, 50.0, 98.0);
     vec3 inv = 1.0 / rd;
     vec3 ta = (bmin - ro) * inv, tb = (bmax - ro) * inv;
     vec3 tn = min(ta, tb), tf = max(ta, tb);
     float t = max(max(tn.x, tn.y), max(tn.z, 0.02)), t1 = min(min(tf.x, tf.y), tf.z);
     part = -1;
+    hth = 0.0;
     if (t >= t1) return -1.0;
     float vl = length(rd);
-    for (int s = 0; s < 90; s++) {
+    for (int s = 0; s < 110; s++) {
         vec3 q = ro + rd * t;
         int pt;
-        float al;
-        vec2 d = armSdf(q, i, pt, al);
-        if (d.x < 0.35) {
+        vec3 rq;
+        float d = handDist(q, i, pt, rq);
+        if (d < 0.2) {
             hq = q;
-            part = int(d.y);
-            hth = al;
+            part = pt;
             return t;
         }
-        t += max(d.x * 0.7, 0.3) / vl;
+        t += max(d * 0.75, 0.25) / vl;
         if (t > t1) break;
     }
     return -1.0;
 }
 
-float gArmMetal = 0.0, gArmRough = 0.6;
+float gArmMetal = 0.0, gArmRough = 0.6, gArmTrans = 0.0;
 
-void shadeArm(int i, int mat, vec3 q, float along, float t, out vec3 alb, out vec3 nc) {
+void shadeArm(int i, int part0, vec3 q, float unused, float t, out vec3 alb, out vec3 nc) {
     const vec2 k = vec2(1.0, -1.0);
-    const float e = 0.6;
+    const float e = 0.5;
     int pt;
-    float al;
-    vec3 n = normalize(k.xyy * armSdf(q + k.xyy * e, i, pt, al).x + k.yyx * armSdf(q + k.yyx * e, i, pt, al).x
-                     + k.yxy * armSdf(q + k.yxy * e, i, pt, al).x + k.xxx * armSdf(q + k.xxx * e, i, pt, al).x);
-    vec2 tq = floor(vec2(q.x * 0.5 + q.y * 0.3, q.z * 0.5));          // point-sampled 2.5 mm texels
-    float grain = hash(tq) * 0.6 + hash(floor(tq / 5.0)) * 0.4;
-    gArmMetal = 0.0;
-    if (mat == 1) {                                     // dark oiled leather, two straps with iron buckles
-        float strap = step(abs(q.x - 205.0), 9.0) + step(abs(q.x - 300.0), 9.0);
-        float stitch = step(abs(fract(q.x * 0.11) - 0.5), 0.18) * step(abs(abs(q.z) - 30.0), 1.2);
-        alb = vec3(0.24, 0.14, 0.08) * (0.78 + 0.35 * grain);
-        alb = mix(alb, vec3(0.14, 0.09, 0.05) * (0.8 + 0.3 * grain), strap);
-        alb = mix(alb, vec3(0.45, 0.36, 0.24), stitch * (1.0 - strap));
-        float buckle = strap * step(q.y, -10.0) * step(-10.0, -abs(q.z));
-        buckle = clamp(buckle, 0.0, 1.0) * step(abs(abs(q.x - 252.5) - 47.5), 6.0);
-        alb = mix(alb, vec3(0.42, 0.41, 0.40), buckle);
-        gArmMetal = buckle;
-        gArmRough = mix(0.58, 0.35, buckle);
-    } else if (mat == 2) {                              // linen wrap, a little grubby
-        alb = vec3(0.62, 0.56, 0.46) * (0.80 + 0.25 * grain) * (0.85 + 0.15 * sin(q.x * 0.55 + atan(q.y, q.z) * 2.0));
-        gArmRough = 0.9;
-    } else if (mat == 3) {                              // fingernail
-        alb = vec3(0.80, 0.66, 0.60) * (0.9 + 0.15 * grain);
-        gArmRough = 0.35;
-    } else {                                            // skin: warmer over the knuckles, rougher on the palm
-        alb = vec3(0.66, 0.45, 0.34) * (0.90 + 0.14 * grain);
-        float kn = along > 0.0 ? max(1.0 - abs(along - 0.40) / 0.08, 0.0) + max(1.0 - abs(along - 0.72) / 0.07, 0.0) : 0.0;
-        alb = mix(alb, vec3(0.70, 0.40, 0.32), 0.35 * kn * step(0.0, q.y));
-        alb *= 0.9 + 0.1 * step(0.0, q.y);
-        gArmRough = 0.55;
-    }
+    vec3 rq;
+    vec3 n = normalize(k.xyy * handDist(q + k.xyy * e, i, pt, rq) + k.yyx * handDist(q + k.yyx * e, i, pt, rq)
+                     + k.yxy * handDist(q + k.yxy * e, i, pt, rq) + k.xxx * handDist(q + k.xxx * e, i, pt, rq));
+    handDist(q, i, pt, rq);
+    vec4 c = textureLod(uHandC, handTex(rq, i), 0.0);
+    alb = c.rgb;
+    int mat = int(c.a * 255.0 / 50.0 + 0.5);
+    gArmMetal = mat == 4 ? 1.0 : 0.0;
+    gArmTrans = mat == 0 ? 0.25 : 0.0;              // light through skin
+    gArmRough = mat == 1 ? 0.62 : (mat == 2 ? 0.9 : (mat == 3 ? 0.32 : (mat == 4 ? 0.38 : 0.52)));
     nc = normalize(uArmRot[i] * n);
 }
 
@@ -1255,7 +1209,7 @@ void main() {
             float armOpen = volOpen(uCam);
             float adark = clamp(1.0 - armOpen * (1.0 - uStars * 0.85), 0.0, 1.0);
             // physically based: skin with a little light through it, leather, linen, iron buckles
-            col = pbr(alb, nw, -d, gArmRough, gArmMetal, 1.0, armOpen, 1.0, 1.0 * adark, ap == 0 ? 0.25 : 0.0);
+            col = pbr(alb, nw, -d, gArmRough, gArmMetal, 1.0, armOpen, 1.0, 1.0 * adark, gArmTrans);
             shaftMask = 0.0;
         }
     }
