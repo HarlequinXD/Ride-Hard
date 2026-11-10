@@ -8,25 +8,31 @@ package com.harlequinxd.eryndor;
 final class TreeShadows {
     private TreeShadows() {}
 
-    static int[] apply(int[] ground, byte[] trees, TreeLibrary lib) {
-        final int S = WorldTextures.GROUND_SIZE;
-        final float PPM = WorldTextures.PPM;
-        int[] out = ground.clone();
-        float[] dark = new float[S * S];
-        for (int cz = 0; cz < WorldTextures.TREE_GRID; cz++)
-            for (int cx = 0; cx < WorldTextures.TREE_GRID; cx++) {
-                int o = (cz * WorldTextures.TREE_GRID + cx) * 4;
-                int a = trees[o + 3] & 255;
+    /**
+     * Shadow one painted chunk (packed ARGB, N x N texels whose top-left is global texel gx0, gy0)
+     * from every tree near enough to cast onto it.
+     */
+    static void applyChunk(int[] ground, int gx0, int gy0, int N, TreeLibrary lib) {
+        final float PPM = WorldTextures.PPM, CELL = WorldTextures.TREE_CELL;
+        float[] dark = new float[N * N];
+        float wx0 = gx0 / PPM, wz0 = gy0 / PPM, wx1 = (gx0 + N) / PPM, wz1 = (gy0 + N) / PPM;
+        int c0x = (int) Math.floor((wx0 - 26f) / CELL), c1x = (int) Math.floor((wx1 + 26f) / CELL);
+        int c0z = (int) Math.floor((wz0 - 26f) / CELL), c1z = (int) Math.floor((wz1 + 26f) / CELL);
+        boolean any = false;
+        for (int cz = c0z; cz <= c1z; cz++)
+            for (int cx = c0x; cx <= c1x; cx++) {
+                byte[] trees = WorldTextures.treeBytes(cx, cz);
+                int a = trees[3] & 255;
                 if (a < 128) continue;
-                int bv = trees[o + 2] & 255, sp = Math.min(9, bv / 25);
+                int bv = trees[2] & 255, sp = Math.min(9, bv / 25);
                 float yaw = (bv - sp * 25) / 25f * (float) (Math.PI * 2);
                 float sz = 0.85f + (a / 255f - 0.5f) * 0.7f;                 // same as the shader
-                float half = halfWidth(lib.models[sp]);
-                sz = Math.min(sz, TreeLibrary.MAX_HALF_WIDTH / Math.max(0.1f, half));
-                float wx = (cx + 0.5f) * WorldTextures.TREE_CELL + ((trees[o] & 255) / 255f - 0.5f) * 3f;
-                float wz = (cz + 0.5f) * WorldTextures.TREE_CELL + ((trees[o + 1] & 255) / 255f - 0.5f) * 3f;
-                float c = (float) Math.cos(yaw), s = (float) Math.sin(yaw);
                 TreeModel m = lib.models[sp];
+                float half = halfWidth(m);
+                sz = Math.min(sz, TreeLibrary.MAX_HALF_WIDTH / Math.max(0.1f, half));
+                float wx = (cx + 0.5f) * CELL + ((trees[0] & 255) / 255f - 0.5f) * 3f;
+                float wz = (cz + 0.5f) * CELL + ((trees[1] & 255) / 255f - 0.5f) * 3f;
+                float c = (float) Math.cos(yaw), s = (float) Math.sin(yaw);
                 for (int i = 0; i < m.primCount; i++) {
                     float[] p = m.prims;
                     int b = i * 12;
@@ -42,21 +48,21 @@ final class TreeShadows {
                         float x = wx + sz * (lx * c + lz * s), z = wz + sz * (-lx * s + lz * c), y = ly * sz;
                         x += y * 0.35f * 0.75f;
                         z += y * 0.35f * 0.6f;
-                        splat(dark, x * PPM, z * PPM, Math.max(0.6f, r * sz * PPM), leaf ? 0.10f : 0.35f, S);
+                        any |= splat(dark, x * PPM - gx0, z * PPM - gy0, Math.max(0.6f, r * sz * PPM), leaf ? 0.10f : 0.35f, N);
                     }
                 }
             }
-        for (int i = 0; i < out.length; i++) {
+        if (!any) return;
+        for (int i = 0; i < ground.length; i++) {
             if (dark[i] <= 0f) continue;
             float k = 1f - Math.min(0.55f, dark[i]);
-            int v = out[i];
+            int v = ground[i];
             int r = Math.round(((v >> 16) & 255) * k), g = Math.round(((v >> 8) & 255) * k), b = Math.round((v & 255) * k);
             // alpha: 0 = water; land stores how lit it is (0.5..1), so textured ground (the grass
             // photo, which ignores the colour) still gets the tree shadows
             int a = (v >>> 24) == 0 ? 0 : Math.round(255f * (0.5f + 0.5f * k));
-            out[i] = (a << 24) | (r << 16) | (g << 8) | b;
+            ground[i] = (a << 24) | (r << 16) | (g << 8) | b;
         }
-        return out;
     }
 
     static float halfWidth(TreeModel m) {
@@ -68,17 +74,19 @@ final class TreeShadows {
         return (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
-    private static void splat(float[] dark, float px, float pz, float rad, float amount, int S) {
-        int x0 = (int) Math.floor(px - rad), x1 = (int) Math.ceil(px + rad);
-        int z0 = (int) Math.floor(pz - rad), z1 = (int) Math.ceil(pz + rad);
+    private static boolean splat(float[] dark, float px, float pz, float rad, float amount, int S) {
+        int x0 = Math.max(0, (int) Math.floor(px - rad)), x1 = Math.min(S - 1, (int) Math.ceil(px + rad));
+        int z0 = Math.max(0, (int) Math.floor(pz - rad)), z1 = Math.min(S - 1, (int) Math.ceil(pz + rad));
+        if (x0 > x1 || z0 > z1) return false;
         for (int z = z0; z <= z1; z++)
             for (int x = x0; x <= x1; x++) {
                 float dx = x + 0.5f - px, dz = z + 0.5f - pz;
                 float d = (float) Math.sqrt(dx * dx + dz * dz);
                 if (d > rad + 0.5f) continue;
                 float w = Math.min(1f, rad + 0.5f - d);
-                int i = Math.floorMod(z, S) * S + Math.floorMod(x, S);
+                int i = z * S + x;
                 dark[i] = Math.min(0.9f, dark[i] + amount * w);
             }
+        return true;
     }
 }

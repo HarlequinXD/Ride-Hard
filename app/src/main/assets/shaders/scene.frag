@@ -45,7 +45,7 @@ uniform highp sampler2DArray uSurfNH;   // their normal maps (r, g) and height m
 uniform vec2 uTanHalf;
 uniform float uYaw;
 uniform float uPitch;
-uniform vec3 uCam;           // camera x, eye height, z (x/z wrapped to the 256 m tile)
+uniform vec3 uCam;           // camera x, eye height, z (x/z shifted by a multiple of 4096 m)
 uniform vec2 uCloudO;        // camera xz + wind drift wrapped to the 2000 m cloud tile
 
 uniform vec3 uSunDir;
@@ -68,7 +68,9 @@ uniform float uMist;
 
 const float CLOUD_H = 420.0;
 const float HMAX = 64.0;
-const float FAR = 700.0;
+const float FAR = 224.0;      // the ground window reaches 224 m or more each way
+const float WIN = 512.0;      // metres of ground, heights, materials and trees held around you (wraps)
+const float VOL_NEAR = 88.0;  // the volume window holds at least 96 m each way; beyond, plain heights
 const float DMAX = 3.0;
 const float DFAR = 70.0;      // detail relief fades out by here
 
@@ -79,7 +81,14 @@ float detailFade(float t) { return smoothstep(DFAR, DFAR * 0.4, t); }
 const vec3 VOL_SCALE = vec3(1.0 / 256.0, 1.0 / 64.0, 1.0 / 256.0);
 float volDist(vec3 p) {
     if (p.y > 63.5) return p.y - 63.0;                          // above the volume: open air
-    float d = textureLod(uVol, p * VOL_SCALE, 0.0).r * 8.0 - 4.0;
+    vec2 off = abs(p.xz - uCam.xz);
+    float far = smoothstep(VOL_NEAR - 8.0, VOL_NEAR, max(off.x, off.y));
+    float d = 0.0;
+    if (far < 1.0) d = textureLod(uVol, p * VOL_SCALE, 0.0).r * 8.0 - 4.0;
+    if (far > 0.0) {                                             // past the volume window: the heightfield
+        float hd = clamp((p.y - textureLod(uHeight, p.xz / WIN, 0.0).r * HMAX) * 0.7, -4.0, 4.0);
+        d = mix(d, hd, far);
+    }
     return min(d, p.y - 0.3);                                    // bedrock
 }
 float volOpen(vec3 p) { return textureLod(uVol, p * VOL_SCALE, 0.0).g; }
@@ -90,7 +99,7 @@ vec3 volNormal(vec3 p, float e) {
 }
 // how much the 2D surface detail applies here: on the open-air ground surface, not in tunnels
 float topWeight(vec3 p) {
-    float top = texture(uHeight, p.xz / 256.0).r * HMAX;
+    float top = texture(uHeight, p.xz / WIN).r * HMAX;
     return smoothstep(-0.7, -0.3, p.y - top);
 }
 
@@ -303,7 +312,7 @@ int surfLayer(float mid) {
     return -1;
 }
 
-float matAt(vec2 xz) { return floor(texture(uMat, xz / 256.0).r * 255.0 / MAT_STEP + 0.5); }
+float matAt(vec2 xz) { return floor(texture(uMat, xz / WIN).r * 255.0 / MAT_STEP + 0.5); }
 
 vec2 surfUV(int layer, vec2 xz, out float turned) {
     turned = 0.0;
@@ -362,7 +371,7 @@ bool fernAt(vec3 p, out vec3 col, out float near) {
     vec2 q = p.xz - c;
     float r = length(q);
     if (r > L + 0.3) return false;
-    float base = texture(uHeight, c / 256.0).r * HMAX + texture(uDetail, c / 256.0).r * DMAX - 0.04;
+    float base = texture(uHeight, c / WIN).r * HMAX + texture(uDetail, c / WIN).r * DMAX - 0.04;
     float H = 0.45 + 0.35 * f.b;
     float y = p.y - base;
     if (y < -0.1 || y > H + 0.25) return false;
@@ -447,7 +456,7 @@ float microHeight(vec2 wp, float mid) {
 // ---- spline trees from the Tree Builder: tapered branch segments and textured leaves, traced
 //      per pixel through each species' 3D zone grid (no meshes)
 const float TC = 16.0;          // world tree cell size; every tree fits inside its own cell
-const float TREE_FAR = 260.0;
+const float TREE_FAR = 222.0;
 const float PIX = 0.0085;       // radians per low-res pixel (for leaf texture detail level)
 
 vec4 tfetch(sampler2D s, int i) { return texelFetch(s, ivec2(i % 1024, i / 1024), 0); }
@@ -628,7 +637,7 @@ vec3 giAmbient(vec3 p, vec3 n, float t) {
             vec3 nq = normalize(vec3(volDist(q + vec3(0.4, 0.0, 0.0)) - d0, volDist(q + vec3(0.0, 0.4, 0.0)) - d0,
                                      volDist(q + vec3(0.0, 0.0, 0.4)) - d0) + 1e-4);
             float oq = volOpen(q + nq * 0.6);
-            vec3 albq = mix(vec3(0.20, 0.19, 0.17), toLin(texture(uGround, q.xz / 256.0).rgb), topWeight(q));
+            vec3 albq = mix(vec3(0.20, 0.19, 0.17), toLin(texture(uGround, q.xz / WIN).rgb), topWeight(q));
             sum += albq * (sunL * max(dot(nq, uSunDir), 0.0) * oq / PI + skyL * mix(0.05, 1.0, oq));
         } else {
             sum += skyL * volOpen(q) * (0.85 + 0.3 * max(dir.y, 0.0));
@@ -874,7 +883,7 @@ void main() {
         if (dd < 4.0 && t < DFAR) {
             tw = topWeight(p);
             if (tw > 0.0) {
-                float det = texture(uDetail, p.xz / 256.0).r * DMAX * detailFade(t);
+                float det = texture(uDetail, p.xz / WIN).r * DMAX * detailFade(t);
                 if (t < SURF_FAR) det += surfHeight(p.xz, t);
                 dd -= det * tw;
             }
@@ -899,7 +908,7 @@ void main() {
             float dd = volDist(p);
             float tw = topWeight(p);
             if (tw > 0.0 && m < DFAR) {
-                float det = texture(uDetail, p.xz / 256.0).r * DMAX * detailFade(m);
+                float det = texture(uDetail, p.xz / WIN).r * DMAX * detailFade(m);
                 if (m < SURF_FAR) det += surfHeight(p.xz, m);
                 dd -= det * tw;
             }
@@ -913,15 +922,15 @@ void main() {
     vec2 wp = hp.xz;
 
     // ---- surface data (sampled outside the loop so texture LOD stays well defined)
-    vec4 gt = texture(uGround, wp / 256.0);
+    vec4 gt = texture(uGround, wp / WIN);
     vec3 nMacro = volNormal(hp, 0.3);                       // the volume's own surface normal
     float onTop = hit * topWeight(hp - nMacro * 0.05);      // open-air ground (not a tunnel or overhang)
     float useTop = 1.0 - onTop;                             // underground: rock, no 2D textures
     // fine relief normal (0.125 m texels) on the open-air ground, faded with distance
     float e2 = 0.125;
     vec2 dx2 = vec2(e2, 0.0), dz2 = vec2(0.0, e2);
-    float dfx = (texture(uDetail, (wp + dx2) / 256.0).r - texture(uDetail, (wp - dx2) / 256.0).r) * DMAX;
-    float dfz = (texture(uDetail, (wp + dz2) / 256.0).r - texture(uDetail, (wp - dz2) / 256.0).r) * DMAX;
+    float dfx = (texture(uDetail, (wp + dx2) / WIN).r - texture(uDetail, (wp - dx2) / WIN).r) * DMAX;
+    float dfz = (texture(uDetail, (wp + dz2) / WIN).r - texture(uDetail, (wp - dz2) / WIN).r) * DMAX;
     float dk = detailFade(T) * onTop;
     vec3 n = normalize(nMacro + vec3(-dfx, 0.0, -dfz) / (2.0 * e2) * dk * max(nMacro.y, 0.0));
     if (nMacro.y < -0.2) kind = 1.0;
@@ -1029,6 +1038,12 @@ void main() {
     float fog = 1.0 - exp(-T * uFog * mix(0.4, 1.0, camOpen));
     vec3 fogc = mix(vec3(0.0), uFogCol, max(open, camOpen));   // fog only goes black when you are in the dark
     vec3 ground = mix(g, fogc, fog);
+    {   // the land fades into the far tree line painted at the horizon, hiding the window's edge
+        float keep = gOpenSky;
+        vec3 horizon = skyColor(normalize(vec3(d.x, 0.004, d.z)));
+        gOpenSky = keep;
+        ground = mix(ground, mix(horizon, fogc, fog), smoothstep(FAR * 0.62, FAR - 2.0, T) * max(open, camOpen));
+    }
 
     vec3 missCol = d.y > 0.0 ? sky : uFogCol;
     vec3 col = mix(missCol, ground, hit);
@@ -1061,7 +1076,7 @@ void main() {
             float tCell = 0.0;
             for (int i = 0; i < 26; i++) {
                 if (tCell > tLimit) break;
-                vec4 f = texture(uTrees, (mod(cell, 16.0) + 0.5) / 16.0);
+                vec4 f = texture(uTrees, (mod(cell, 32.0) + 0.5) / 32.0);
                 if (f.a > 0.5) {
                     vec2 c = (cell + 0.5) * TC + (f.rg - 0.5) * 3.0;
                     float bv = floor(f.b * 255.0 + 0.5);
@@ -1069,7 +1084,7 @@ void main() {
                     float halfW = uTreeMeta[sp * 6 + 2].w;
                     float sz = (0.85 + (f.a - 0.5) * 0.7);
                     sz = min(sz, 6.3 / max(halfW, 0.1));
-                    vec4 hm = texture(uHeight, c / 256.0) * HMAX;
+                    vec4 hm = texture(uHeight, c / WIN) * HMAX;
                     float baseY = (hm.b - hm.g > 0.4) ? hm.b : hm.r;
                     float yaw = (bv - float(sp) * 25.0) / 25.0 * 6.2831853;
                     float cyw = cos(yaw), syw = sin(yaw);

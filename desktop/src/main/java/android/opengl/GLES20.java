@@ -88,6 +88,12 @@ public class GLES20 {
 
     public static void glGenerateMipmap(int target) { GL30.glGenerateMipmap(target); }
 
+    public static void glTexSubImage2D(int target, int level, int x, int y, int w, int h, int format, int type, Buffer pixels) {
+        if (format == GL_LUMINANCE) format = GL11.GL_RED;        // stored as one red channel (see glTexImage2D)
+        ByteBuffer b = (ByteBuffer) pixels;
+        GL11.glTexSubImage2D(target, level, x, y, w, h, format, type, b.isDirect() ? b : direct(b));
+    }
+
     public static void glTexImage2D(int target, int level, int internalFormat, int w, int h, int border,
                                     int format, int type, Buffer pixels) {
         if (format == GL_LUMINANCE) {

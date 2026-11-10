@@ -8,8 +8,6 @@ import android.opengl.GLES30;
 import android.opengl.GLSurfaceView;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -33,7 +31,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private static final float MIN_HEADROOM = 1.95f;
     private static final float WALK_SPEED = 4.2f;      // m/s at full stick
     private static final float LOOK_SENS = 0.0065f;    // radians per dp
-    private static final int GROUND_CACHE_VERSION = 16;
 
     private final Input input;
     private final SkyState sky;
@@ -65,14 +62,17 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     // world data built off the GL thread, then uploaded once ready
     private volatile boolean dataReady;
     private Thread builder;
-    private int[] heightData, groundData, groundBase, cloudData;
+    private int[] cloudData;
+    /** Streams the world in 32 m chunks around the player (the GPU holds a window of it). */
+    private final ChunkStreamer streamer = new ChunkStreamer();
+    private final java.util.ArrayList<WorldTextures.Chunk2D> fresh2 = new java.util.ArrayList<>();
+    private final java.util.ArrayList<Voxels.VolChunk> freshV = new java.util.ArrayList<>();
     volatile TreeLibrary library;
     private int treePrimTex, treeCellTex, treeIdxTex, leafAtlasTex, uploadedTreeVersion = -1;
     // first-person arms: colour / normal / height sheets (decoded off the GL thread)
     private int armColTex, armNrmTex, armHgtTex;
     // terrain volume (tunnels, caves, overhangs): 3D RG8, distance + sky openness
     private int volTex;
-    private java.nio.ByteBuffer volData;
     // ground texture sets, one array layer each (order = layer index in scene.frag):
     // colour, and normal map + height packed together; tiling, point sampled
     static final String[] SURFACES = {"grass", "cobble", "dirt", "rock", "forest", "gravel", "sand", "snow",
@@ -83,7 +83,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private int[][] armData;
     private int[] armW = new int[3], armH = new int[3];
     private final ArmRig arms = new ArmRig();
-    private volatile int[] reshadowed;                  // ground re-shadowed after a species edit
     private final float[] treeMeta = new float[TreeLibrary.SLOTS * TreeLibrary.META * 4];
 
     // Tree Builder preview: one species shown at a fixed spot, camera orbiting it
@@ -91,8 +90,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     volatile float orbitYaw = 0.6f, orbitDist = 16f, orbitPitch = 0.15f, previewYaw;
     /** Where the preview tree sits on screen, in NDC x (−0.48 keeps it clear of the builder panel). */
     volatile float previewScreenX = 0f;
-    static final float PREVIEW_X = 128f, PREVIEW_Z = 170f;
-    private byte[] detailData, matData, fernData, treeData;
+    /** Where the preview tree stands: picked a little ahead of you when the builder opens. */
+    private double previewX = Double.NaN, previewZ;
     private boolean uploaded;
 
     @Override
@@ -121,32 +120,13 @@ final class GameRenderer implements GLSurfaceView.Renderer {
 
     private void buildWorld() {
         Loading.set("Waking the realm", 0.01f);
-        int[] heights = WorldTextures.heightTexture();             // shaping the land
-        Voxels.build(cacheDir);                                     // hollowing the tunnels and caves
-        volData = Voxels.volumeRG();
-        int[] ground = loadGround();                                // painting (or reading the saved world)
-        Loading.set("Growing the trees", 0.81f);
+        Loading.set("Growing the trees", 0.03f);
         TreeLibrary lib = new TreeLibrary(cacheDir);
         lib.growAll();
         library = lib;
-        Loading.set("Casting the tree shadows", 0.82f);
-        groundBase = ground;
-        ground = TreeShadows.apply(ground, WorldTextures.trees(), lib);
-        detailData = WorldTextures.detail();
-        matData = WorldTextures.materials();
-        // the painted terrain mask (if the game ships one) decides which texture goes where
-        try {
-            Bitmap mask = readBitmap("terrain/terrain_mask.png");
-            int mw = mask.getWidth(), mh = mask.getHeight();
-            int[] px = new int[mw * mh];
-            mask.getPixels(px, 0, mw, 0, 0, mw, mh);
-            mask.recycle();
-            matData = TerrainMask.decode(px, mw, mh, WorldTextures.GROUND_SIZE);
-        } catch (IllegalStateException noMask) {
-            // no mask: keep the generated materials
-        }
-        fernData = WorldTextures.ferns();
-        treeData = WorldTextures.trees();
+        streamer.lib = lib;
+        Loading.set("Raising the land around you", 0.06f);
+        streamer.loadAll(px, pz, 0.06f, 0.80f);
         Loading.set("Shaping your arms", 0.825f);
         String[] sheets = {"arms/arm_col.png", "arms/arm_nrm.png", "arms/arm_hgt.png"};
         int[][] ad = new int[3][];
@@ -175,8 +155,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         surfNH = sn;
         Loading.set("Gathering the clouds", 0.83f);
         cloudData = WorldTextures.clouds();
-        heightData = heights;
-        groundData = ground;
         Loading.set("Compiling the shaders", 0.85f);
         dataReady = true;
     }
@@ -187,13 +165,14 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         sceneProg = GLUtil.program(vs, GLUtil.asset(assets, "shaders/scene.frag"));
         blitProg = GLUtil.program(vs, GLUtil.asset(assets, "shaders/blit.frag"));
         Loading.set("Uploading the land", 0.90f);
-        groundTex = GLUtil.texture(groundData, WorldTextures.GROUND_SIZE, true);    // point sampled
-        heightTex = GLUtil.texture(heightData, WorldTextures.HEIGHT_SIZE, false, true);
+        streamer.drain(null, null, 1 << 20);                     // anything finished since loading
+        groundTex = GLUtil.texture(WorldTextures.groundWin, WorldTextures.GROUND_SIZE, true);    // point sampled
+        heightTex = GLUtil.texture(WorldTextures.heightTexture(), WorldTextures.HEIGHT_SIZE, false, true);
         Loading.set("Uploading the fine relief", 0.94f);
-        detailTex = GLUtil.luminance(detailData, WorldTextures.GROUND_SIZE);
-        matTex = GLUtil.luminance(matData, WorldTextures.GROUND_SIZE, true);
-        fernTex = GLUtil.cells(fernData, WorldTextures.FERN_GRID);
-        treeTex = GLUtil.cells(treeData, WorldTextures.TREE_GRID);
+        detailTex = GLUtil.luminance(WorldTextures.detailWin, WorldTextures.GROUND_SIZE);
+        matTex = GLUtil.luminance(WorldTextures.matWin, WorldTextures.GROUND_SIZE, true);
+        fernTex = GLUtil.cells(WorldTextures.fernWin, WorldTextures.FERN_GRID);
+        treeTex = GLUtil.cells(WorldTextures.treeWin, WorldTextures.TREE_GRID);
         cloudTex = GLUtil.texture(cloudData, WorldTextures.CLOUD_SIZE, false);
         leafAtlasTex = GLUtil.atlas(LeafAtlas.build(), LeafAtlas.W, LeafAtlas.H);
         armColTex = GLUtil.atlas(armData[0], armW[0], armH[0]);
@@ -203,8 +182,9 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         surfColTex = GLUtil.textureArray(surfCol, surfSize);    // repeating, point sampled
         surfNHTex = GLUtil.textureArray(surfNH, surfSize);
         surfCol = surfNH = null;
-        volTex = GLUtil.texture3D(volData, Voxels.NX, Voxels.NY, Voxels.NZ);
-        volData = null;
+        java.nio.ByteBuffer vb = ByteBuffer.allocateDirect(Voxels.vol.length).order(ByteOrder.nativeOrder());
+        vb.put(Voxels.vol).position(0);
+        volTex = GLUtil.texture3D(vb, Voxels.NX, Voxels.NY, Voxels.NZ);
         uploadTrees();
         Loading.set("Lighting the lanterns", 0.99f);
         eyeY = Float.isNaN(spawnFeet) ? Float.NaN : spawnFeet + EYE_HEIGHT;
@@ -251,13 +231,12 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    /** After a species is saved, recast the tree shadows on the ground off the GL thread. */
+    /** After a species is saved, recast the tree shadows: the ground is repainted chunk by chunk. */
     void reshadow() {
-        TreeLibrary lib = library;
-        int[] base = groundBase;
-        if (lib == null || base == null) return;
-        new Thread(() -> reshadowed = TreeShadows.apply(base, WorldTextures.trees(), lib), "reshadow").start();
+        reshadowPending = true;
     }
+
+    private volatile boolean reshadowPending;
 
     private Bitmap readBitmap(String path) {
         BitmapFactory.Options o = new BitmapFactory.Options();
@@ -270,60 +249,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         } catch (java.io.IOException e) {
             throw new IllegalStateException("missing asset " + path, e);
         }
-    }
-
-    /** The ground takes a few seconds to paint, so colours + detail heights are cached on disk. */
-    private int[] loadGround() {
-        int n = WorldTextures.GROUND_SIZE * WorldTextures.GROUND_SIZE;
-        File f = new File(cacheDir, "ground_v" + GROUND_CACHE_VERSION + ".bin");
-        File[] old = cacheDir.listFiles((dir, name) -> name.startsWith("ground_v") && !name.equals(f.getName()));
-        if (old != null) for (File o : old) o.delete();
-        int fb = WorldTextures.FERN_GRID * WorldTextures.FERN_GRID * 4;
-        int tb = WorldTextures.TREE_GRID * WorldTextures.TREE_GRID * 4;
-        if (f.length() == n * 6L + fb + tb) {
-            Loading.set("Reading the saved world", 0.12f);
-            try (FileInputStream in = new FileInputStream(f)) {
-                byte[] bytes = new byte[n * 6 + fb + tb];
-                int off = 0, r;
-                while (off < bytes.length && (r = in.read(bytes, off, Math.min(1 << 20, bytes.length - off))) > 0) {
-                    off += r;
-                    Loading.within(0.12f, 0.80f, off / (float) bytes.length);
-                }
-                if (off == bytes.length) {
-                    int[] px = new int[n];
-                    ByteBuffer.wrap(bytes, 0, n * 4).asIntBuffer().get(px);
-                    byte[] det = new byte[n];
-                    System.arraycopy(bytes, n * 4, det, 0, n);
-                    byte[] mat = new byte[n];
-                    System.arraycopy(bytes, n * 5, mat, 0, n);
-                    byte[] fern = new byte[fb];
-                    System.arraycopy(bytes, n * 6, fern, 0, fb);
-                    byte[] tree = new byte[tb];
-                    System.arraycopy(bytes, n * 6 + fb, tree, 0, tb);
-                    WorldTextures.setCached(px, det, fern, mat, tree);
-                    return px;
-                }
-            } catch (Exception ignored) {
-            }
-        }
-        int[] px = WorldTextures.ground();
-        byte[] det = WorldTextures.detail();
-        byte[] fern = WorldTextures.ferns();
-        byte[] mat = WorldTextures.materials();
-        byte[] tree = WorldTextures.trees();
-        Loading.set("Saving the world for next time", 0.81f);
-        try (FileOutputStream out = new FileOutputStream(f)) {
-            ByteBuffer bb = ByteBuffer.allocate(n * 6 + fb + tb);
-            bb.asIntBuffer().put(px);
-            bb.position(n * 4);
-            bb.put(det);
-            bb.put(mat);
-            bb.put(fern);
-            bb.put(tree);
-            out.write(bb.array());
-        } catch (Exception ignored) {
-        }
-        return px;
     }
 
     @Override
@@ -379,15 +304,12 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         if (time > 3600f) time -= 3600f;
 
         if (library != null && library.version != uploadedTreeVersion) uploadTrees();
-        int[] rs = reshadowed;
-        if (rs != null) {
-            reshadowed = null;
-            GLES20.glDeleteTextures(1, new int[]{groundTex}, 0);
-            groundTex = GLUtil.texture(rs, WorldTextures.GROUND_SIZE, true);
-        }
         int slot = previewSlot;
+        streamChunks();
         if (slot < 0) {
-            updatePlayer(dt);
+            previewX = Double.NaN;
+            if (streamer.ready(px, pz)) updatePlayer(dt);
+            else input.consumeLook(look);
             arms.update(dt, look[0] * LOOK_SENS, -look[1] * LOOK_SENS, bobAmt, bobPhase);
         } else input.consumeLook(look);
         sky.update(dt);
@@ -433,11 +355,15 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         float pvX = 0, pvY = 0, pvZ = 0;
         if (slot >= 0 && library != null) {
             float h = library.specs[slot].get(TreeSpec.HEIGHT);
-            float base = WorldTextures.floorAt(PREVIEW_X, PREVIEW_Z);
+            if (Double.isNaN(previewX)) {                       // a clear spot a little ahead of you
+                previewX = px + Math.sin(yaw) * 9.0;
+                previewZ = pz - Math.cos(yaw) * 9.0;
+            }
+            float base = WorldTextures.floorAt(previewX, previewZ);
             orbitYaw += look[0] * 0.008f;
             orbitPitch = Math.max(-0.1f, Math.min(1.2f, orbitPitch + look[1] * 0.006f));
             float dist = orbitDist;
-            float tx = PREVIEW_X, ty = base + h * 0.45f, tz = PREVIEW_Z;
+            float tx = (float) previewX, ty = base + h * 0.45f, tz = (float) previewZ;
             camX = tx + Math.sin(orbitYaw) * Math.cos(orbitPitch) * dist;
             camZ = tz + Math.cos(orbitYaw) * Math.cos(orbitPitch) * dist;
             camY = ty + (float) Math.sin(orbitPitch) * dist;
@@ -447,6 +373,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             camPitch = (float) Math.atan2(dy, Math.sqrt(dx * dx + dz * dz));
             pvX = tx; pvY = base - 0.05f; pvZ = tz;
         }
+        // the shader works in a frame shifted by a multiple of 4096 m (a multiple of every window and
+        // texture repeat), so its floats stay small and precise anywhere in the 32 km world
+        double offX = camX - mod(camX, 4096.0), offZ = camZ - mod(camZ, 4096.0);
+        pvX -= (float) offX;
+        pvZ -= (float) offZ;
         GLES20.glUniform1f(u(sceneProg, "uYaw"), camYaw);
         projectSun(camYaw, camPitch, tanY * fboW / fboH, tanY);
         GLES20.glUniform1f(u(sceneProg, "uPitch"), camPitch);
@@ -466,7 +397,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(u(sceneProg, "uSwordShow"), arms.sword ? 1f : 0f);
         GLES20.glUniform1fv(u(sceneProg, "uFingK"), 10, arms.fingerK, 0);
         GLES20.glUniform1f(u(sceneProg, "uArmShow"), slot < 0 ? 1f : 0f);
-        GLES20.glUniform3f(u(sceneProg, "uCam"), (float) mod(camX, 256.0), camY, (float) mod(camZ, 256.0));
+        GLES20.glUniform3f(u(sceneProg, "uCam"), (float) (camX - offX), camY, (float) (camZ - offZ));
         GLES20.glUniform2f(u(sceneProg, "uCloudO"), (float) mod(px + windX, 2000.0), (float) mod(pz + windZ, 2000.0));
         GLES20.glUniform3fv(u(sceneProg, "uSunDir"), 1, sky.sunDir, 0);
         GLES20.glUniform3fv(u(sceneProg, "uSkyTop"), 1, sky.skyTop, 0);
@@ -546,6 +477,41 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         sunOn = sky.sunVis * edge * Math.max(0f, Math.min(1f, (float) y * 6f + 0.3f));
     }
 
+    /** Queue chunks around the player and upload the ones that are ready (a few per frame). */
+    private void streamChunks() {
+        double sx = px, sz = pz;
+        if (previewSlot >= 0 && !Double.isNaN(previewX)) { sx = previewX; sz = previewZ; }
+        if (reshadowPending) {
+            reshadowPending = false;
+            streamer.invalidateGround();
+        }
+        streamer.update(sx, sz);
+        fresh2.clear();
+        freshV.clear();
+        streamer.drain(fresh2, freshV, 6);
+        if (fresh2.isEmpty() && freshV.isEmpty()) return;
+        final int N = WorldTextures.CHUNK_PX, S = WorldTextures.GROUND_SIZE;
+        for (WorldTextures.Chunk2D c : fresh2) {
+            int ox = Math.floorMod(c.cx * N, S), oy = Math.floorMod(c.cz * N, S);
+            GLUtil.subTexture(groundTex, c.ground, ox, oy, N, N);
+            GLUtil.subLuminance(detailTex, c.detail, ox, oy, N, N);
+            GLUtil.subLuminance(matTex, c.mat, ox, oy, N, N);
+            int[] h = new int[64 * 64];
+            for (int i = 0; i < h.length; i++) h[i] = WorldTextures.heightTexel(c.heights[i]);
+            GLUtil.subTexture(heightTex, h, Math.floorMod(c.cx * 64, WorldTextures.HEIGHT_SIZE), Math.floorMod(c.cz * 64, WorldTextures.HEIGHT_SIZE), 64, 64);
+            for (int j = 0; j < 2; j++)
+                for (int i = 0; i < 2; i++) {
+                    byte[] t = new byte[4];
+                    System.arraycopy(c.trees, (j * 2 + i) * 4, t, 0, 4);
+                    GLUtil.subCells(treeTex, t, Math.floorMod(c.cx * 2 + i, WorldTextures.TREE_GRID), Math.floorMod(c.cz * 2 + j, WorldTextures.TREE_GRID), 1, 1);
+                }
+        }
+        if (!fresh2.isEmpty()) GLUtil.remip(groundTex);
+        final int C = Voxels.CHUNK_V;
+        for (Voxels.VolChunk c : freshV)
+            GLUtil.subTexture3D(volTex, c.rg, Math.floorMod(c.cx * C, Voxels.NX), 0, Math.floorMod(c.cz * C, Voxels.NZ), C, Voxels.NY, C);
+    }
+
     private void updatePlayer(float dt) {
         input.consumeLook(look);
         yaw += look[0] * LOOK_SENS;
@@ -572,10 +538,10 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         eyeY = Float.isNaN(eyeY) ? want : eyeY + (want - eyeY) * Math.min(1f, dt * 14f);
         float target = mag > 0.02f ? mag : 0f;
         bobAmt += (target - bobAmt) * Math.min(1f, dt * 6f);
-        // keep doubles small; the world tiles every 256 m and the clouds every 2000 m
-        // 32000 m is a multiple of both tile sizes, so the wrap is invisible
-        if (Math.abs(px) > 64000.0) px = mod(px, 32000.0);
-        if (Math.abs(pz) > 64000.0) pz = mod(pz, 32000.0);
+        // the land ends at the mountains, 16 km out from the village each way
+        double lim = WorldTextures.WORLD_HALF - 60.0;
+        px = Math.max(WorldTextures.CENTRE_X - lim, Math.min(WorldTextures.CENTRE_X + lim, px));
+        pz = Math.max(WorldTextures.CENTRE_Z - lim, Math.min(WorldTextures.CENTRE_Z + lim, pz));
     }
 
     /** Terrain plus fine relief (rocks, shrubs, walls) under a point. */

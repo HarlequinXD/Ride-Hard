@@ -211,4 +211,60 @@ final class GLUtil {
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_REPEAT);
         return t[0];
     }
+
+    // ---- streaming: replace part of a texture (the world windows, one chunk at a time)
+    private static ByteBuffer scratch;
+
+    private static ByteBuffer scratch(int bytes) {
+        if (scratch == null || scratch.capacity() < bytes)
+            scratch = ByteBuffer.allocateDirect(Math.max(bytes, 1 << 20)).order(ByteOrder.nativeOrder());
+        scratch.clear();
+        return scratch;
+    }
+
+    /** Replace a w x h block of an ARGB texture (uploaded as RGBA bytes, alpha untouched). */
+    static void subTexture(int tex, int[] argb, int x, int y, int w, int h) {
+        ByteBuffer bb = scratch(w * h * 4);
+        for (int i = 0; i < w * h; i++) {
+            int c = argb[i];
+            bb.put((byte) (c >> 16)).put((byte) (c >> 8)).put((byte) c).put((byte) (c >>> 24));
+        }
+        bb.flip();
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, x, y, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, bb);
+    }
+
+    /** Replace a block of a single-channel texture. */
+    static void subLuminance(int tex, byte[] data, int x, int y, int w, int h) {
+        ByteBuffer bb = scratch(w * h);
+        bb.put(data, 0, w * h).flip();
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, x, y, w, h, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, bb);
+    }
+
+    /** Replace a block of an RGBA cell texture. */
+    static void subCells(int tex, byte[] rgba, int x, int y, int w, int h) {
+        ByteBuffer bb = scratch(w * h * 4);
+        bb.put(rgba, 0, w * h * 4).flip();
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, x, y, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, bb);
+    }
+
+    /** Rebuild a texture's mipmaps after blocks of it changed. */
+    static void remip(int tex) {
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
+        GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D);
+    }
+
+    /** Replace a block of the RG8 volume. */
+    static void subTexture3D(int tex, byte[] rg, int x, int y, int z, int w, int h, int d) {
+        ByteBuffer bb = scratch(w * h * d * 2);
+        bb.put(rg, 0, w * h * d * 2).flip();
+        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, tex);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES30.glTexSubImage3D(GLES30.GL_TEXTURE_3D, 0, x, y, z, w, h, d, GLES30.GL_RG, GLES20.GL_UNSIGNED_BYTE, bb);
+    }
 }

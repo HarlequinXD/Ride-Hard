@@ -4,17 +4,32 @@ A first-person fantasy RPG for Android. First milestone: the world around the vi
 Hollowspire.
 
 - **Pixel-voxel terrain (a volume, not a heightmap)**: the land is a 3D signed-distance volume
-  (512 x 96 x 512 samples, 0.5 m apart, over the 256 m tile and 48 m of height) traced per screen
+  (0.5 m samples, 64 m tall; the GPU holds a 256 m window of it around you) traced per screen
   pixel: sphere steps through open air, fine steps near the surface, trilinear blending so every
   surface is smooth (no cubes; the grid is only data). That allows real **tunnels, caves and
-  overhangs**: Hollow Hill's winding cave and domed chamber, and three ridges raised across open
-  country, each with a tunnel bored through under several metres of rock. Sky openness is traced
+  overhangs**: Hollow Hill's winding cave and domed chamber, and rocky ridges raised across open
+  country (about one in two 256 m regions has one), each with a tunnel bored through under
+  several metres of rock. Sky openness is traced
   through the volume too (a second channel), so tunnels darken away from their portals and the
   lantern takes over; walls, ceilings and tunnel floors are rock, the open-air ground keeps the
   painted ground, texture sets and 2D relief. You walk on the first rock surface under your feet,
-  so you can go through a tunnel or over its ridge. The volume is built once (a couple of seconds)
-  and cached.
-- **Fine relief**: a second 2048 x 2048 detail heightmap, texel for texel with the ground colours,
+  so you can go through a tunnel or over its ridge. Trees never stand over a tunnel or cave (no
+  more floating trees with their roots in a tunnel roof).
+- **A 32 km world in chunks**: the land is 32 km across (16 km each way from the village) and never
+  repeats. Everything is generated per 32 m chunk from its world position (non-repeating hashed
+  noise, seeds per chunk, trees per 16 m cell), so chunks come out the same in any order. The GPU
+  holds a 512 m window of ground, heights, materials and trees and a 256 m window of the voxel
+  volume, both with wrap-around addressing; background threads generate the chunks you are
+  walking towards (nearest first) and a few are uploaded each frame, so there is no seam and no
+  repaint of the whole world. Past ~90 m the tracer falls back from the volume to the heightfield,
+  and past ~150 m the land fades into the painted far tree line, hiding the window's edge. The
+  wilds: rolling lowlands to big high ground varying over kilometres, broadleaf and pine forests
+  with their own floors (leaf litter, needles, moss, roots), bare rock and gravel on steep slopes,
+  a river every ~1.4 km (each bridged where the north road crosses it), the north road running the
+  whole length of the land, boulders, fallen logs, stumps, cairns and molehills, and a wall of
+  mountains at the edges. The shader works in a frame shifted by multiples of 4096 m so its
+  floats stay precise anywhere.
+- **Fine relief**: a detail heightmap (8 texels per metre), texel for texel with the ground colours,
   lifts lumpy hummocks, dense grass, shrubs, ferns, fallen logs, stumps, cairns, molehills,
   boulders, pebbles, grass tufts, flowers, cobbles, curbs, bridge parapets, the
   fountain, the well and the standing stones. It is ray-marched per screen pixel with smooth
@@ -67,25 +82,12 @@ Hollowspire.
   map, an OpenGL-style normal map and a height map (the height drives per-pixel relief and the
   parallax self-shadowing): grass, cobblestone, dirt, cave rock, forest floor (leaf litter), gravel,
   sand, snow, moss, pine needles, roots, mud, forest grass, cliff and mossy rock. Steep slopes in
-  the open wear the cliff face and tunnels the cave rock, both wrapped from three sides; the
-  terrain mask picks the rest (palette in `TerrainMask.java`). To swap one: put your colour,
+  the open wear the cliff face and tunnels the cave rock, both wrapped from three sides; the world
+  generator's material ids pick the rest for now (a better way of placing textures on the voxel
+  terrain is coming; the old painted colour-mask map is gone). To swap one: put your colour,
   normal and height images in `textures/landscape/` as `<name>_col.png`, `<name>_nrm.png`,
   `<name>_hgt.png` and run `tools/build_surface.py <name> <col> <nrm> <hgt> app/src/main/assets/surfaces`
   (or regenerate all placeholders with `tools/make_landscape_textures.py textures/landscape`).
-- **Terrain texture mask**: `app/src/main/assets/terrain/terrain_mask.png` (2048 x 2048, one
-  pixel per 12.5 cm) is a painted colour map that picks the texture for each patch of ground.
-  Colours snap to the nearest palette entry, so soft brushes work:
-
-  | Colour | Hex | Texture |
-  |---|---|---|
-  | green | `#2EB82E` | grass (texture set) |
-  | brown | `#8C5A28` | earth / dirt |
-  | grey | `#808080` | cobblestone road (texture set) |
-  | dark brown | `#4A2810` | wood |
-  | blue | `#1E5AFF` | water |
-  | dark green | `#0F5A28` | plants |
-
-  Delete the file to go back to the generated layout; `TerrainMaskExport` writes a fresh one.
 - **Ground texture sets** (grass, cobblestone road): tiling colour, normal map and height map,
   one texture-array layer each. `tools/build_surface.py name colour normal height out_dir` makes a
   set seamless (a cheapest-path cut through each border band, following the mortar or low ground,
@@ -115,12 +117,11 @@ Hollowspire.
   terrain slope and the 12.5 cm relief, and is lit by the sun with soft specular on stone and wet
   ground.
 - **Loading screen**: title, a real progress bar and the stage being built (shaping the land,
-  carving Hollow Hill, painting meadows, planting ferns...). After the first run the world is
-  read back from a save, which is much quicker.
+  growing the trees, raising the land around you); the first 512 m are generated on all cores.
 - **The world**: a cobbled village with a plaza fountain and a well, a cart track running north to
   a stone bridge over a winding river, meadows with wildflowers, shrubs and mossy boulders, a
   ring of standing stones on a mound, fairy rings, and Hollow Hill to the east with a tunnel
-  leading to a domed chamber (with a skylight). Tiles every 256 m.
+  leading to a domed chamber (with a skylight), at the heart of the 32 km wilds.
 - **Caves**: daylight fades as you go in, rain stops, and a warm lantern lights the way (it also
   comes on at night). You collide with walls and the ceiling.
 - **Sky (Mode 7)**: a drifting cloud plane with moving cloud shadows, snow-capped mountains, the
@@ -150,7 +151,7 @@ last ten years).
 | Show / hide help | View or Menu | F1 |
 | Full screen | | F11 or Alt+Enter |
 
-The world cache, saved tree designs and `eryndor.log` live in `%APPDATA%\ChroniclesOfEryndor`.
+Saved tree designs and `eryndor.log` live in `%APPDATA%\ChroniclesOfEryndor`.
 The PC version runs the same code as the phone (`desktop/` adds the window, controls, HUD and small
 stand-ins for Android's GL classes). The Tree Builder is phone-only for now.
 Build it yourself with `gradle -p desktop run`.

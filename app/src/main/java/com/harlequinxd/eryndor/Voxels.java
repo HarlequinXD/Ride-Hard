@@ -1,18 +1,19 @@
 package com.harlequinxd.eryndor;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The terrain as a volume instead of a heightmap, so the world can hold tunnels, caves and
  * overhangs. Nothing here is drawn as cubes: the grid is only data, a signed distance to the
  * ground surface every 0.5 m, which the shader blends smoothly and traces per screen pixel.
  *
- * Grid: 512 x 128 x 512 (x, y, z) over the 256 m tile and 64 m of height. Each cell is two bytes:
- * R = signed distance (metres, -4..4; negative = inside rock), G = how open the sky is there.
+ * The GPU holds a 256 m window of it around the player: 512 x 128 x 512 (x, y, z), 0.5 m cells,
+ * 64 m tall, addressed with wrap-around. It is filled in 32 m chunks generated straight from the
+ * terrain and tunnel shapes (no global pass), so the world can go on for kilometres. Each cell is
+ * two bytes: R = signed distance (metres, -4..4; negative = inside rock), G = how open the sky is.
  */
 final class Voxels {
     private Voxels() { }
@@ -20,72 +21,126 @@ final class Voxels {
     static final int NX = 512, NY = 128, NZ = 512;
     static final float CELL = 0.5f;                 // metres
     static final float RANGE = 4f;                  // distances are clamped to +-4 m
-    static final int CACHE_VERSION = 4;
+    static final float WINDOW = NX * CELL;          // 256 m
+    static final int CHUNK_V = 64;                  // voxels per chunk side (32 m)
+    static final int WIN_CHUNKS = NX / CHUNK_V;     // 8 chunks across the window
 
-    /** Signed distances (as uploaded), x fastest, then y, then z. */
-    private static byte[] sdf;
-    /** Sky openness on a coarse grid (2 m), x fastest, then y, then z. */
-    private static byte[] open;
-    static final int OX = 128, OY = 32, OZ = 128;
+    /** The window: RG pairs, x fastest, then y, then z (as uploaded). */
+    static final byte[] vol = new byte[NX * NY * NZ * 2];
+
+    /** Where the game begins: a cave chamber deep under the meadow south of the village. */
+    static final float START_X = 150f, START_Z = 170f;
 
     // ------------------------------------------------------------------ tunnels
-    /** A tunnel: centreline points (x, z), floor height at each point, radius. */
+    /** A tunnel: centreline points (x, floorY, z), radius, height, and its bounding box. */
     static final class Tunnel {
-        final float[][] pts;     // x, floorY, z
+        final float[][] pts;
         final float radius, height;
+        final float minX, minZ, maxX, maxZ;
 
         Tunnel(float[][] pts, float radius, float height) {
             this.pts = pts;
             this.radius = radius;
             this.height = height;
+            float a = 1e9f, b = 1e9f, c = -1e9f, d = -1e9f;
+            for (float[] p : pts) {
+                a = Math.min(a, p[0]);
+                b = Math.min(b, p[2]);
+                c = Math.max(c, p[0]);
+                d = Math.max(d, p[2]);
+            }
+            float m = radius + RANGE + 1f;
+            minX = a - m;
+            minZ = b - m;
+            maxX = c + m;
+            maxZ = d + m;
+        }
+
+        boolean overlaps(float x0, float z0, float x1, float z1) {
+            return maxX >= x0 && minX <= x1 && maxZ >= z0 && minZ <= z1;
         }
     }
 
-    static Tunnel[] tunnels;
+    private static volatile Tunnel[] fixedTunnels;
+    private static float chamberFloor;
+    private static final Tunnel NO_TUNNEL = new Tunnel(new float[][]{{0, 0, 0}}, 0f, 0f);
+    private static final ConcurrentHashMap<Long, Tunnel> ridgeTunnels = new ConcurrentHashMap<>();
 
-    /** Build the tunnel list: Hollow Hill's cave plus tunnels driven through the highest ridges. */
-    private static Tunnel[] makeTunnels() {
-        java.util.ArrayList<Tunnel> list = new java.util.ArrayList<>();
-        // Hollow Hill: from the mouth, winding down into the hill
-        float mouth = WorldTextures.terrainAt(Cave.PATH[0][0], Cave.PATH[0][1]);    // floor meets the ground
-        float[][] hp = new float[Cave.PATH.length][];
-        float s = 0f;
-        for (int i = 0; i < Cave.PATH.length; i++) {
-            if (i > 0) {
-                float dx = Cave.PATH[i][0] - Cave.PATH[i - 1][0], dz = Cave.PATH[i][1] - Cave.PATH[i - 1][1];
-                s += (float) Math.sqrt(dx * dx + dz * dz);
+    /** Hand-made tunnels: Hollow Hill's cave (and the start network, see Underground). */
+    static Tunnel[] fixed() {
+        Tunnel[] f = fixedTunnels;
+        if (f != null) return f;
+        synchronized (Voxels.class) {
+            if (fixedTunnels != null) return fixedTunnels;
+            ArrayList<Tunnel> list = new ArrayList<>();
+            // Hollow Hill: from the mouth, winding down into the hill
+            float mouth = WorldTextures.terrainAt(Cave.PATH[0][0], Cave.PATH[0][1]);    // floor meets the ground
+            float[][] hp = new float[Cave.PATH.length][];
+            float s = 0f;
+            for (int i = 0; i < Cave.PATH.length; i++) {
+                if (i > 0) {
+                    float dx = Cave.PATH[i][0] - Cave.PATH[i - 1][0], dz = Cave.PATH[i][1] - Cave.PATH[i - 1][1];
+                    s += (float) Math.sqrt(dx * dx + dz * dz);
+                }
+                hp[i] = new float[]{Cave.PATH[i][0], mouth - 0.05f * s, Cave.PATH[i][1]};
             }
-            hp[i] = new float[]{Cave.PATH[i][0], mouth - 0.05f * s, Cave.PATH[i][1]};
+            list.add(new Tunnel(withRamps(hp, true, false), 2.6f, 3.6f));
+            chamberFloor = hp[hp.length - 1][1] - 0.4f;
+            Underground.addTunnels(list);
+            fixedTunnels = list.toArray(new Tunnel[0]);
+            return fixedTunnels;
         }
-        list.add(new Tunnel(withRamps(hp, true, false), 2.6f, 3.6f));
+    }
 
-        // a tunnel straight through each ridge, portals on open ground either side, floor graded
-        // between them (the ridges are raised for this in WorldTextures.terrain)
-        java.util.Random rnd = new java.util.Random(9091);
-        for (float[] r : WorldTextures.ridges) {
-            float ca = (float) Math.cos(r[2]), sa = (float) Math.sin(r[2]);
-            float half = WorldTextures.RIDGE_HALF_WIDTH * 2.3f;
-            float ax = r[0] - ca * half, az = r[1] - sa * half, cx = r[0] + ca * half, cz = r[1] + sa * half;
-            float fa = WorldTextures.terrainAt(ax, az), fc = WorldTextures.terrainAt(cx, cz);   // floors meet the ground
-            int seg = 8;
-            float[][] p = new float[seg + 1][];
-            float side = (rnd.nextFloat() - 0.5f) * 5f;
-            for (int i = 0; i <= seg; i++) {
-                float t = i / (float) seg;
-                float bend = (float) Math.sin(t * Math.PI) * side;     // a gentle curve
-                p[i] = new float[]{ax + (cx - ax) * t - sa * bend, fa + (fc - fa) * t, az + (cz - az) * t + ca * bend};
-            }
-            list.add(new Tunnel(withRamps(p, true, true), 2.5f + rnd.nextFloat() * 0.7f, 3.6f + rnd.nextFloat() * 0.8f));
+    /** The tunnel straight through the ridge of a 256 m region, or null. */
+    static Tunnel ridgeTunnel(int rx, int rz) {
+        long k = WorldTextures.key(rx, rz);
+        Tunnel t = ridgeTunnels.get(k);
+        if (t == null) {
+            float[] r = WorldTextures.ridgeIn(rx, rz);
+            t = r == null ? NO_TUNNEL : throughRidge(r, new Random(rx * 9091L + rz * 77731L));
+            ridgeTunnels.put(k, t);
         }
-        return list.toArray(new Tunnel[0]);
+        return t == NO_TUNNEL ? null : t;
+    }
+
+    /** Portals on open ground either side, floor graded between them, a gentle curve. */
+    private static Tunnel throughRidge(float[] r, Random rnd) {
+        float ca = (float) Math.cos(r[2]), sa = (float) Math.sin(r[2]);
+        float half = WorldTextures.RIDGE_HALF_WIDTH * 2.3f;
+        float ax = r[0] - ca * half, az = r[1] - sa * half, cx = r[0] + ca * half, cz = r[1] + sa * half;
+        float fa = WorldTextures.terrainAt(ax, az), fc = WorldTextures.terrainAt(cx, cz);   // floors meet the ground
+        int seg = 8;
+        float[][] p = new float[seg + 1][];
+        float side = (rnd.nextFloat() - 0.5f) * 5f;
+        for (int i = 0; i <= seg; i++) {
+            float t = i / (float) seg;
+            float bend = (float) Math.sin(t * Math.PI) * side;
+            p[i] = new float[]{ax + (cx - ax) * t - sa * bend, fa + (fc - fa) * t, az + (cz - az) * t + ca * bend};
+        }
+        return new Tunnel(withRamps(p, true, true), 2.5f + rnd.nextFloat() * 0.7f, 3.6f + rnd.nextFloat() * 0.8f);
+    }
+
+    /** Every tunnel whose reach overlaps the box. */
+    static List<Tunnel> tunnelsNear(float x0, float z0, float x1, float z1) {
+        ArrayList<Tunnel> out = new ArrayList<>();
+        for (Tunnel t : fixed()) if (t.overlaps(x0, z0, x1, z1)) out.add(t);
+        int rx0 = (int) Math.floor(x0 / WorldTextures.REGION), rx1 = (int) Math.floor(x1 / WorldTextures.REGION);
+        int rz0 = (int) Math.floor(z0 / WorldTextures.REGION), rz1 = (int) Math.floor(z1 / WorldTextures.REGION);
+        for (int rz = rz0; rz <= rz1; rz++)
+            for (int rx = rx0; rx <= rx1; rx++) {
+                Tunnel t = ridgeTunnel(rx, rz);
+                if (t != null && t.overlaps(x0, z0, x1, z1)) out.add(t);
+            }
+        return out;
     }
 
     /**
      * Run a tunnel a few metres on past its portals as a ramp that follows the ground, so the floor
      * meets the hillside smoothly instead of ending in a lip at the bore's rounded end.
      */
-    private static float[][] withRamps(float[][] p, boolean start, boolean end) {
-        java.util.ArrayList<float[]> out = new java.util.ArrayList<>();
+    static float[][] withRamps(float[][] p, boolean start, boolean end) {
+        ArrayList<float[]> out = new ArrayList<>();
         if (start) out.add(ramp(p[0], p[1]));
         java.util.Collections.addAll(out, p);
         if (end) out.add(ramp(p[p.length - 1], p[p.length - 2]));
@@ -99,15 +154,14 @@ final class Voxels {
     }
 
     /** Signed distance to the air of one tunnel (negative inside): a rounded bore with a flat floor. */
-    private static float tunnelAir(Tunnel tn, float x, float y, float z) {
+    static float tunnelAir(Tunnel tn, float x, float y, float z) {
         float best = 1e9f, floor = 0f;
         for (int i = 0; i < tn.pts.length - 1; i++) {
             float[] a = tn.pts[i], b = tn.pts[i + 1];
-            float ax = a[0], az = a[2], bx = b[0], bz = b[2];
-            float dx = WorldTextures.wrapD(bx, ax), dz = WorldTextures.wrapD(bz, az);
-            float px = WorldTextures.wrapD(x, ax), pz = WorldTextures.wrapD(z, az);
+            float dx = b[0] - a[0], dz = b[2] - a[2];
+            float px = x - a[0], pz = z - a[2];
             float len2 = dx * dx + dz * dz;
-            float t = Math.max(0f, Math.min(1f, (px * dx + pz * dz) / len2));
+            float t = len2 < 1e-6f ? 0f : Math.max(0f, Math.min(1f, (px * dx + pz * dz) / len2));
             float fy = a[1] + (b[1] - a[1]) * t;
             float cy = fy + tn.height * 0.45f;
             float ex = px - dx * t, ez = pz - dz * t, ey = (y - cy) * 1.25f;     // a little taller than wide
@@ -118,100 +172,180 @@ final class Voxels {
     }
 
     /** Signed distance to the air of Hollow Hill's domed chamber. */
-    private static float chamberAir(float x, float y, float z, float floorY) {
-        float dx = WorldTextures.wrapD(x, Cave.CHAMBER_X), dz = WorldTextures.wrapD(z, Cave.CHAMBER_Z);
-        float dy = (y - floorY) * 1.15f;
+    private static float chamberAir(float x, float y, float z) {
+        float dx = x - Cave.CHAMBER_X, dz = z - Cave.CHAMBER_Z;
+        float dy = (y - chamberFloor) * 1.15f;
         float d = (float) Math.sqrt(dx * dx + dy * dy + dz * dz) - Cave.CHAMBER_R;
-        return Math.max(d, floorY - y);
+        return Math.max(d, chamberFloor - y);
     }
 
-    // ------------------------------------------------------------------ build
-    static synchronized void build(File cacheDir) {
-        if (sdf != null) return;
-        File f = new File(cacheDir, "voxels_v" + CACHE_VERSION + ".bin");
-        int n = NX * NY * NZ, no = OX * OY * OZ;
-        tunnels = makeTunnels();
-        if (f.length() == n + no) {
-            try (FileInputStream in = new FileInputStream(f)) {
-                byte[] a = new byte[n], b = new byte[no];
-                if (read(in, a) && read(in, b)) {
-                    sdf = a;
-                    open = b;
-                    Loading.set("Reading the hollow earth", 0.45f);
-                    return;
-                }
-            } catch (Exception ignored) {
-            }
+    private static boolean chamberNear(float x0, float z0, float x1, float z1) {
+        float m = Cave.CHAMBER_R + RANGE + 1f;
+        return Cave.CHAMBER_X + m >= x0 && Cave.CHAMBER_X - m <= x1 && Cave.CHAMBER_Z + m >= z0 && Cave.CHAMBER_Z - m <= z1;
+    }
+
+    /** Air of every carved space at a point (min over tunnels, chamber and the start caves). */
+    private static float carvedAir(List<Tunnel> tl, boolean chamber, float x, float y, float z) {
+        float air = 1e9f;
+        for (Tunnel tn : tl) air = Math.min(air, tunnelAir(tn, x, y, z));
+        if (chamber) air = Math.min(air, chamberAir(x, y, z));
+        return Math.min(air, Underground.roomAir(x, y, z));
+    }
+
+    /** True if a tunnel or cave runs within `depth` metres under the ground near (x, z). */
+    static boolean carvedUnder(float x, float z, float depth) {
+        fixed();
+        List<Tunnel> tl = tunnelsNear(x - 4, z - 4, x + 4, z + 4);
+        boolean ch = chamberNear(x - 4, z - 4, x + 4, z + 4);
+        float[][] off = {{0, 0}, {2.5f, 0}, {-2.5f, 0}, {0, 2.5f}, {0, -2.5f}};
+        for (float[] o : off) {
+            float px = x + o[0], pz = z + o[1];
+            float top = WorldTextures.terrainAt(px, pz);
+            if (carvedAir(tl, ch, px, top - 0.5f, pz) < depth) return true;
         }
-        Loading.set("Hollowing the earth", 0.40f);
-        byte[] out = new byte[n];
-        // ground surface per column: height and slope factor (vertical distance -> true distance)
-        float[] top = new float[NX * NZ], slope = new float[NX * NZ];
-        for (int z = 0; z < NZ; z++)
-            for (int x = 0; x < NX; x++)
-                top[z * NX + x] = WorldTextures.terrainAt((x + 0.5f) * CELL, (z + 0.5f) * CELL);
-        for (int z = 0; z < NZ; z++)
-            for (int x = 0; x < NX; x++) {
-                float gx = (top[z * NX + (x + 1) % NX] - top[z * NX + (x + NX - 1) % NX]) / (2 * CELL);
-                float gz = (top[((z + 1) % NZ) * NX + x] - top[((z + NZ - 1) % NZ) * NX + x]) / (2 * CELL);
-                slope[z * NX + x] = 1f / (float) Math.sqrt(1 + gx * gx + gz * gz);
-            }
+        return false;
+    }
+
+    // ------------------------------------------------------------------ chunks
+    /** One 32 m column of the volume (64 x 128 x 64 cells, RG), ready to copy into the window. */
+    static final class VolChunk {
+        final int cx, cz;
+        final byte[] rg = new byte[CHUNK_V * NY * CHUNK_V * 2];
+
+        VolChunk(int cx, int cz) {
+            this.cx = cx;
+            this.cz = cz;
+        }
+    }
+
+    /** Build one chunk straight from the terrain and the carved shapes. Thread-safe. */
+    static VolChunk fillChunk(int vcx, int vcz) {
+        fixed();
+        final int C = CHUNK_V;
+        final float x0 = vcx * C * CELL, z0 = vcz * C * CELL, x1 = x0 + C * CELL, z1 = z0 + C * CELL;
+        VolChunk out = new VolChunk(vcx, vcz);
+        List<Tunnel> tl = tunnelsNear(x0 - 6, z0 - 6, x1 + 6, z1 + 6);
+        boolean ch = chamberNear(x0, z0, x1, z1);
+        boolean room = Underground.near(x0 - 6, z0 - 6, x1 + 6, z1 + 6);
+        boolean carved = !tl.isEmpty() || ch || room;
+
+        // ground surface per column with a border: height and slope factor (vertical -> true distance)
+        final int HN = C + 2;
+        float[] top = new float[HN * HN];
+        for (int j = 0; j < HN; j++)
+            for (int i = 0; i < HN; i++)
+                top[j * HN + i] = WorldTextures.terrainAt(x0 + (i - 1 + 0.5f) * CELL, z0 + (j - 1 + 0.5f) * CELL);
         float[] d = new float[NY];
-        float chamberFloor = tunnels[0].pts[tunnels[0].pts.length - 1][1] - 0.4f;
-        for (int z = 0; z < NZ; z++) {
-            if ((z & 31) == 0) Loading.within(0.40f, 0.48f, z / (float) NZ);
-            float wz = (z + 0.5f) * CELL;
-            for (int x = 0; x < NX; x++) {
-                float wx = (x + 0.5f) * CELL;
-                int c = z * NX + x;
-                for (int y = 0; y < NY; y++) d[y] = ((y + 0.5f) * CELL - top[c]) * slope[c];
-                // carve the tunnels (only where one passes nearby)
-                for (Tunnel tn : tunnels) {
-                    if (!nearTunnel(tn, wx, wz)) continue;
+        for (int z = 0; z < C; z++) {
+            float wz = z0 + (z + 0.5f) * CELL;
+            for (int x = 0; x < C; x++) {
+                float wx = x0 + (x + 0.5f) * CELL;
+                int c = (z + 1) * HN + x + 1;
+                float gx = (top[c + 1] - top[c - 1]) / (2 * CELL), gz = (top[c + HN] - top[c - HN]) / (2 * CELL);
+                float slope = 1f / (float) Math.sqrt(1 + gx * gx + gz * gz);
+                for (int y = 0; y < NY; y++) d[y] = ((y + 0.5f) * CELL - top[c]) * slope;
+                if (carved) {
                     for (int y = 0; y < NY; y++) {
-                        float air = tunnelAir(tn, wx, (y + 0.5f) * CELL, wz);
+                        float air = carvedAir(tl, ch, wx, (y + 0.5f) * CELL, wz);
                         if (air < RANGE) d[y] = Math.max(d[y], -air);
-                    }
-                }
-                if (Math.hypot(WorldTextures.wrapD(wx, Cave.CHAMBER_X), WorldTextures.wrapD(wz, Cave.CHAMBER_Z)) < Cave.CHAMBER_R + RANGE) {
-                    for (int y = 0; y < NY; y++) {
-                        float air = chamberAir(wx, (y + 0.5f) * CELL, wz, chamberFloor);
-                        d[y] = Math.max(d[y], -air);
                     }
                 }
                 for (int y = 0; y < NY; y++) {
                     float v = Math.max(-RANGE, Math.min(RANGE, d[y]));
-                    out[(z * NY + y) * NX + x] = (byte) Math.round((v + RANGE) / (2 * RANGE) * 255f);
+                    out.rg[((z * NY + y) * C + x) * 2] = (byte) Math.round((v + RANGE) / (2 * RANGE) * 255f);
                 }
             }
         }
-        sdf = out;
-        Loading.set("Letting in the light", 0.48f);
-        open = computeOpenness();
-        try (FileOutputStream o = new FileOutputStream(f)) {
-            o.write(sdf);
-            o.write(open);
-        } catch (Exception ignored) {
+
+        if (!carved) {
+            // nothing carved here: the sky is open down to ~2 m under the ground, then shut
+            for (int z = 0; z < C; z++)
+                for (int x = 0; x < C; x++) {
+                    float t = top[(z + 1) * HN + x + 1];
+                    for (int y = 0; y < NY; y++) {
+                        float o = Math.max(0f, Math.min(1f, ((y + 0.5f) * CELL - t + 2f) * 0.5f + 0.5f));
+                        out.rg[((z * NY + y) * C + x) * 2 + 1] = (byte) Math.round(o * 255f);
+                    }
+                }
+            return out;
         }
+        // sky openness on a 2 m grid (with a one-cell border), then spread to the cells
+        final int OC = C / 4 + 2, OY = NY / 4;
+        float[] op = new float[OC * OY * OC];
+        int k0x = vcx * (C / 4) - 1, k0z = vcz * (C / 4) - 1;
+        for (int k = 0; k < OC; k++)
+            for (int i = 0; i < OC; i++) {
+                float wx = (k0x + i + 0.5f) * 2f, wz = (k0z + k + 0.5f) * 2f;
+                float t = WorldTextures.terrainAt(wx, wz);
+                for (int j = 0; j < OY; j++)
+                    op[(k * OY + j) * OC + i] = openness(wx, (j + 0.5f) * 2f, wz, t, carved ? tl : null, ch);
+            }
+        for (int z = 0; z < C; z++)
+            for (int y = 0; y < NY; y++)
+                for (int x = 0; x < C; x++) {
+                    // cell centre in openness-grid units (the grid starts one 2 m cell early)
+                    float fx = (x + 0.5f) / 4f + 1f - 0.5f, fy = Math.max(0f, Math.min(OY - 1.001f, (y + 0.5f) / 4f - 0.5f)), fz = (z + 0.5f) / 4f + 1f - 0.5f;
+                    int ix = (int) fx, iy = (int) fy, iz = (int) fz;
+                    float tx = fx - ix, ty = fy - iy, tz = fz - iz;
+                    float r = 0f;
+                    for (int q = 0; q < 8; q++) {
+                        int dx = q & 1, dy = (q >> 1) & 1, dz = q >> 2;
+                        float w = (dx == 1 ? tx : 1 - tx) * (dy == 1 ? ty : 1 - ty) * (dz == 1 ? tz : 1 - tz);
+                        r += w * op[((iz + dz) * OY + Math.min(OY - 1, iy + dy)) * OC + Math.min(OC - 1, ix + dx)];
+                    }
+                    out.rg[((z * NY + y) * C + x) * 2 + 1] = (byte) Math.round(Math.max(0f, Math.min(1f, r)) * 255f);
+                }
+        return out;
     }
 
-    private static boolean read(FileInputStream in, byte[] a) throws java.io.IOException {
-        int off = 0, r;
-        while (off < a.length && (r = in.read(a, off, a.length - off)) > 0) off += r;
-        return off == a.length;
+    /** Analytic signed distance (no window needed): the ground, carved by the tunnels and caves. */
+    private static float sdfAt(float x, float y, float z, List<Tunnel> tl, boolean ch) {
+        float d = (y - WorldTextures.terrainAt(x, z)) * 0.75f;
+        if (tl != null) d = Math.max(d, -carvedAir(tl, ch, x, y, z));
+        return d;
     }
 
-    private static boolean nearTunnel(Tunnel tn, float x, float z) {
-        float r = tn.radius + RANGE + 1f;
-        for (int i = 0; i < tn.pts.length - 1; i++) {
-            float[] a = tn.pts[i], b = tn.pts[i + 1];
-            float dx = WorldTextures.wrapD(b[0], a[0]), dz = WorldTextures.wrapD(b[2], a[2]);
-            float px = WorldTextures.wrapD(x, a[0]), pz = WorldTextures.wrapD(z, a[2]);
-            float t = Math.max(0f, Math.min(1f, (px * dx + pz * dz) / (dx * dx + dz * dz)));
-            float ex = px - dx * t, ez = pz - dz * t;
-            if (ex * ex + ez * ez < r * r) return true;
+    /**
+     * How much sky a point sees: 1 in the open, 0 deep in rock; near tunnels and caves, rays
+     * straight up and at 45 degrees around are marched through the carved shapes.
+     */
+    private static float openness(float wx, float wy, float wz, float top, List<Tunnel> tl, boolean ch) {
+        float hereGround = (wy - top) * 0.75f;
+        if (tl == null) return hereGround < -1.5f ? 0f : 1f;
+        float air = carvedAir(tl, ch, wx, wy, wz);
+        float here = Math.max(hereGround, -air);
+        if (here < -1.5f) return 0f;
+        if (air > 3f) return hereGround < -1.5f ? 0f : 1f;           // nowhere near a carved space
+        float sy = wy + Math.max(0, -here) + 0.6f;
+        int esc = 0;
+        for (int k = 0; k < 9; k++) {
+            float dx = 0, dy = 1, dz = 0;
+            if (k > 0) {
+                double a = (k - 1) * Math.PI / 4;
+                dx = (float) Math.cos(a) * 0.7071f;
+                dy = 0.7071f;
+                dz = (float) Math.sin(a) * 0.7071f;
+            }
+            float px = wx, py = sy, pz = wz, t = 0;
+            boolean blocked = false;
+            while (t < 30 && py < NY * CELL) {
+                float d = sdfAt(px, py, pz, tl, ch);
+                if (d < 0.05f) { blocked = true; break; }
+                float st = Math.max(0.3f, d * 0.9f);
+                px += dx * st; py += dy * st; pz += dz * st; t += st;
+            }
+            if (!blocked) esc++;
         }
-        return false;
+        return (float) Math.sqrt(esc / 9f);                           // a little light carries far
+    }
+
+    /** Copy a chunk into the window (wrap-around addressing). */
+    static void store(VolChunk c) {
+        final int C = CHUNK_V;
+        int ox = Math.floorMod(c.cx * C, NX), oz = Math.floorMod(c.cz * C, NZ);
+        for (int z = 0; z < C; z++)
+            for (int y = 0; y < NY; y++)
+                System.arraycopy(c.rg, (z * NY + y) * C * 2, vol, (((oz + z) * NY + y) * NX + ox) * 2, C * 2);
     }
 
     // ------------------------------------------------------------------ sampling (CPU side)
@@ -234,7 +368,7 @@ final class Voxels {
         x = Math.floorMod(x, NX);
         z = Math.floorMod(z, NZ);
         y = Math.max(0, Math.min(NY - 1, y));
-        return ((sdf[(z * NY + y) * NX + x] & 255) / 255f) * 2 * RANGE - RANGE;
+        return ((vol[((z * NY + y) * NX + x) * 2] & 255) / 255f) * 2 * RANGE - RANGE;
     }
 
     /** Height of the floor under a point: the first rock surface at or below fromY. */
@@ -267,82 +401,5 @@ final class Voxels {
             if (y > NY * CELL) return Float.POSITIVE_INFINITY;
         }
         return Float.POSITIVE_INFINITY;
-    }
-
-    // ------------------------------------------------------------------ sky openness
-    /**
-     * How much sky each 2 m cell sees: rays straight up and at 45 degrees around, marched through
-     * the volume; 1 in the open, falling away inside tunnels and deep under overhangs.
-     */
-    private static byte[] computeOpenness() {
-        byte[] o = new byte[OX * OY * OZ];
-        double[][] dirs = new double[9][];
-        dirs[0] = new double[]{0, 1, 0};
-        for (int k = 0; k < 8; k++) {
-            double a = k * Math.PI / 4;
-            dirs[k + 1] = new double[]{Math.cos(a) * 0.7071, 0.7071, Math.sin(a) * 0.7071};
-        }
-        for (int z = 0; z < OZ; z++) {
-            if ((z & 15) == 0) Loading.within(0.48f, 0.52f, z / (float) OZ);
-            for (int y = 0; y < OY; y++)
-                for (int x = 0; x < OX; x++) {
-                    double wx = (x + 0.5) * 2, wy = (y + 0.5) * 2, wz = (z + 0.5) * 2;
-                    float here = distance(wx, wy, wz);
-                    float val;
-                    if (here < -1.5f) {
-                        val = 0f;                                  // deep in rock
-                    } else {
-                        // start from just above the nearby surface, so rock cells at a surface
-                        // share the light of the air beside them
-                        double sy = wy + Math.max(0, -here) + 0.6;
-                        int esc = 0;
-                        for (double[] dv : dirs) {
-                            double px = wx, py = sy, pz = wz, t = 0;
-                            boolean blocked = false;
-                            while (t < 30 && py < NY * CELL) {
-                                float d = distance(px, py, pz);
-                                if (d < 0.05f) { blocked = true; break; }
-                                double st = Math.max(0.3, d * 0.9);
-                                px += dv[0] * st; py += dv[1] * st; pz += dv[2] * st; t += st;
-                            }
-                            if (!blocked) esc++;
-                        }
-                        val = esc / 9f;
-                        val = (float) Math.sqrt(val);              // a little light carries far
-                    }
-                    o[(z * OY + y) * OX + x] = (byte) Math.round(val * 255f);
-                }
-        }
-        return o;
-    }
-
-    /** Upload data: RG8, R = distance, G = openness (trilinear from the coarse grid). */
-    static ByteBuffer volumeRG() {
-        ByteBuffer bb = ByteBuffer.allocateDirect(NX * NY * NZ * 2).order(ByteOrder.nativeOrder());
-        for (int z = 0; z < NZ; z++) {
-            for (int y = 0; y < NY; y++) {
-                for (int x = 0; x < NX; x++) {
-                    bb.put(sdf[(z * NY + y) * NX + x]);
-                    bb.put((byte) Math.round(openAt((x + 0.5) * CELL, (y + 0.5) * CELL, (z + 0.5) * CELL) * 255f));
-                }
-            }
-        }
-        bb.position(0);
-        return bb;
-    }
-
-    /** Sky openness at a world point (trilinear on the coarse grid). */
-    static float openAt(double wx, double wy, double wz) {
-        double fx = wx / 2 - 0.5, fy = Math.max(0, Math.min(OY - 1.001, wy / 2 - 0.5)), fz = wz / 2 - 0.5;
-        int x0 = (int) Math.floor(fx), y0 = (int) Math.floor(fy), z0 = (int) Math.floor(fz);
-        float tx = (float) (fx - x0), ty = (float) (fy - y0), tz = (float) (fz - z0);
-        float r = 0f;
-        for (int k = 0; k < 8; k++) {
-            int dx = k & 1, dy = (k >> 1) & 1, dz = k >> 2;
-            int xi = Math.floorMod(x0 + dx, OX), yi = Math.min(OY - 1, y0 + dy), zi = Math.floorMod(z0 + dz, OZ);
-            float w = (dx == 1 ? tx : 1 - tx) * (dy == 1 ? ty : 1 - ty) * (dz == 1 ? tz : 1 - tz);
-            r += w * ((open[(zi * OY + yi) * OX + xi] & 255) / 255f);
-        }
-        return r;
     }
 }

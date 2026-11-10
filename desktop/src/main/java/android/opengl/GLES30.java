@@ -26,4 +26,15 @@ public class GLES30 extends GLES20 {
         }
         org.lwjgl.opengl.GL12.glTexImage3D(target, level, internalFormat, w, h, depth, border, format, type, b);
     }
+
+    public static void glTexSubImage3D(int target, int level, int x, int y, int z, int w, int h, int depth,
+                                       int format, int type, java.nio.Buffer pixels) {
+        java.nio.ByteBuffer b = (java.nio.ByteBuffer) pixels;
+        if (!b.isDirect()) {
+            java.nio.ByteBuffer d = java.nio.ByteBuffer.allocateDirect(b.remaining()).order(java.nio.ByteOrder.nativeOrder());
+            d.put(b.duplicate()).flip();
+            b = d;
+        }
+        org.lwjgl.opengl.GL12.glTexSubImage3D(target, level, x, y, z, w, h, depth, format, type, b);
+    }
 }
