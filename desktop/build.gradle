@@ -33,7 +33,7 @@ sourceSets {
         java {
             srcDirs = ['src/main/java', '../app/src/main/java']
             // Android-only screens (touch controls, the Tree Builder UI, the activity)
-            exclude '**/MainActivity.java', '**/ControlsView.java', '**/TreeBuilderView.java'
+            exclude '**/MainActivity.java', '**/ControlsView.java', '**/TreeBuilderView.java', '**/CrashLog.java'
         }
         resources {
             srcDirs = ['../app/src/main/assets']

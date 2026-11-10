@@ -28,6 +28,16 @@ public class GLES20 {
     public static final int GL_DEPTH_TEST = GL11.GL_DEPTH_TEST;
     public static final int GL_BLEND = GL11.GL_BLEND;
     public static final int GL_FLOAT = GL11.GL_FLOAT;
+    public static final int GL_RENDERER = GL11.GL_RENDERER;
+    public static final int GL_VERSION = GL11.GL_VERSION;
+    public static final int GL_MAX_TEXTURE_SIZE = GL11.GL_MAX_TEXTURE_SIZE;
+    public static final int GL_MAX_TEXTURE_IMAGE_UNITS = 0x8872;
+    public static final int GL_MAX_FRAGMENT_UNIFORM_VECTORS = 0x8DFD;
+    public static String glGetString(int name) { return GL11.glGetString(name); }
+    public static void glGetIntegerv(int pname, int[] params, int offset) {
+        if (pname == GL_MAX_FRAGMENT_UNIFORM_VECTORS) { params[offset] = GL11.glGetInteger(0x8B49) / 4; return; }
+        params[offset] = GL11.glGetInteger(pname);
+    }
     public static final int GL_FRAGMENT_SHADER = GL20.GL_FRAGMENT_SHADER;
     public static final int GL_FRAMEBUFFER = GL30.GL_FRAMEBUFFER;
     public static final int GL_LINEAR = GL11.GL_LINEAR;

@@ -108,6 +108,12 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         // loading screen (a normal View above us) shows progress.
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glDisable(GLES20.GL_CULL_FACE);
+        int[] lim = new int[3];
+        GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_IMAGE_UNITS, lim, 0);
+        GLES20.glGetIntegerv(GLES20.GL_MAX_FRAGMENT_UNIFORM_VECTORS, lim, 1);
+        GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE, lim, 2);
+        Loading.gpu = "GPU: " + GLES20.glGetString(GLES20.GL_RENDERER) + ", " + GLES20.glGetString(GLES20.GL_VERSION)
+                + ", texture units " + lim[0] + ", uniform vectors " + lim[1] + ", max texture " + lim[2];
         sceneProg = blitProg = 0;
         sceneU.clear();
         blitU.clear();
@@ -119,7 +125,10 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         fboW = fboH = 0;
         lastNanos = System.nanoTime();
         if (builder == null) {
-            builder = new Thread(this::buildWorld, "world-builder");
+            builder = new Thread(() -> {
+                try { buildWorld(); }
+                catch (Throwable e) { failed = true; Loading.fail("Building the world failed", e); }
+            }, "world-builder");
             builder.setPriority(Thread.NORM_PRIORITY - 1);
             builder.start();
         }
@@ -274,8 +283,29 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         fboH = h;
     }
 
+    private volatile boolean failed;
+    private int framesDrawn;
+
     @Override
     public void onDrawFrame(GL10 unused) {
+        if (failed) {                                   // the error is on screen; draw nothing more
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+            GLES20.glClearColor(0.04f, 0.05f, 0.07f, 1f);
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+            try { Thread.sleep(100); } catch (InterruptedException ignored) { }
+            return;
+        }
+        try {
+            drawFrame();
+        } catch (Throwable e) {
+            failed = true;
+            Loading.fail(uploaded ? "Drawing failed" : "Uploading the world failed", e);
+        }
+    }
+
+    private void drawFrame() {
+        if (uploaded && ++framesDrawn == 60) Loading.running();
+        if (uploaded && framesDrawn == 1) Loading.set("Drawing the first frame", 1f);
         if (!uploaded) {
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
             GLES20.glViewport(0, 0, Math.max(1, scrW), Math.max(1, scrH));

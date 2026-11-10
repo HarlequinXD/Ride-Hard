@@ -145,9 +145,18 @@ final class ControlsView extends View {
     @Override
     protected void onDraw(Canvas c) {
         int w = getWidth(), h = getHeight();
+        String err = Loading.error;
+        if (err != null) {                          // something failed in this run: show it, stop
+            c.drawColor(Color.rgb(10, 12, 18));
+            drawReport(c, w, h, "Something went wrong (copied to the clipboard - paste it to Claude):\n" + err, err);
+            postInvalidateDelayed(500);
+            return;
+        }
 
         if (!sky.worldReady) {
             drawLoading(c, w, h);
+            String last = CrashLog.report;
+            if (last != null) drawReport(c, w, h, "The last run crashed (copied to the clipboard - paste it to Claude):\n" + last, last);
             postInvalidateDelayed(50);
             return;
         }
@@ -182,6 +191,38 @@ final class ControlsView extends View {
         c.drawText(clock, btnTime.left - 12 * dp, btnTime.centerY() + 5 * dp, text);
 
         postInvalidateDelayed(moveId != -1 || lookId != -1 ? 16 : 500);
+    }
+
+    private Paint reportPaint, reportBg;
+    private String copied;
+
+    /** A crash report across the top of the screen, small and monospaced; copied once. */
+    private void drawReport(Canvas c, int w, int h, String text, String copy) {
+        if (reportPaint == null) {
+            reportPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            reportPaint.setTypeface(Typeface.MONOSPACE);
+            reportPaint.setTextSize(9 * dp);
+            reportPaint.setColor(Color.rgb(255, 200, 170));
+            reportBg = new Paint();
+            reportBg.setColor(Color.argb(225, 30, 8, 8));
+        }
+        if (!copy.equals(copied)) {
+            copied = copy;
+            try {
+                android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                        getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("Eryndor crash", copy));
+            } catch (Throwable ignored) { }
+        }
+        String[] lines = text.split("\n");
+        float lh = 11 * dp;
+        int max = Math.min(lines.length, (int) (h * 0.62f / lh));
+        c.drawRect(0, 0, w, 8 * dp + max * lh, reportBg);
+        for (int i = 0; i < max; i++) {
+            String ln = lines[i].replace('\t', ' ');
+            int fit = reportPaint.breakText(ln, true, w - 16 * dp, null);
+            c.drawText(ln, 0, fit, 8 * dp, 4 * dp + (i + 1) * lh - 2 * dp, reportPaint);
+        }
     }
 
     private Paint barPaint, barFill, stagePaint;
