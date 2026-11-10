@@ -209,7 +209,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
 
     private float spawnFeet = Float.NaN;
 
-    /** Draw or sheathe the sword in the right hand. */
+    /** Take out or put away the pickaxe. */
     void toggleSword() {
         arms.sword = !arms.sword;
     }
@@ -310,8 +310,16 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             previewX = Double.NaN;
             if (streamer.ready(px, pz)) updatePlayer(dt);
             else input.consumeLook(look);
+            if (input.swingHeld) arms.startSwing();
             arms.update(dt, look[0] * LOOK_SENS, -look[1] * LOOK_SENS, bobAmt, bobPhase);
+            if (arms.takeImpact() && !Float.isNaN(eyeY)) {               // the pickaxe comes down where you look
+                float cp = (float) Math.cos(pitch);
+                float dx = (float) Math.sin(yaw) * cp, dy = (float) Math.sin(pitch), dz = -(float) Math.cos(yaw) * cp;
+                if (Digging.strike(px, eyeY, pz, dx, dy, dz)) arms.bite();
+            }
         } else input.consumeLook(look);
+        Digging.update(dt);
+        uploadDug();
         sky.update(dt);
         windX = (windX + sky.windSpeed * 0.92 * dt) % 2000.0;
         windZ = (windZ + sky.windSpeed * 0.38 * dt) % 2000.0;
@@ -395,6 +403,9 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform3f(u(sceneProg, "uSwordB"), arms.swordB[0], arms.swordB[1], arms.swordB[2]);
         GLES20.glUniform3f(u(sceneProg, "uSwordE"), arms.swordE[0], arms.swordE[1], arms.swordE[2]);
         GLES20.glUniform1f(u(sceneProg, "uSwordShow"), arms.sword ? 1f : 0f);
+        int nClods = Digging.packClods(clodData, offX, offZ);
+        GLES20.glUniform4fv(u(sceneProg, "uClods"), Digging.MAX_CLODS, clodData, 0);
+        GLES20.glUniform1i(u(sceneProg, "uClodN"), nClods);
         GLES20.glUniform1fv(u(sceneProg, "uFingK"), 10, arms.fingerK, 0);
         GLES20.glUniform1f(u(sceneProg, "uArmShow"), slot < 0 ? 1f : 0f);
         GLES20.glUniform3f(u(sceneProg, "uCam"), (float) (camX - offX), camY, (float) (camZ - offZ));
@@ -477,6 +488,50 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         sunOn = sky.sunVis * edge * Math.max(0f, Math.min(1f, (float) y * 6f + 0.3f));
     }
 
+    private final float[] clodData = new float[Digging.MAX_CLODS * 4];
+
+    /** Window start and length of a cell range, split where the window wraps: (start, len) pairs. */
+    private static int[] segments(int a0, int a1, int n) {
+        int len = Math.min(n, a1 - a0 + 1), s = Math.floorMod(a0, n);
+        return s + len <= n ? new int[]{s, len} : new int[]{s, n - s, 0, len - (n - s)};
+    }
+
+    /** Re-upload the parts of the volume and the dirt mask that digging changed this frame. */
+    private void uploadDug() {
+        if (Digging.volDirty()) {
+            int[] b = Digging.dirtyVol;
+            final int NX = Voxels.NX, NY = Voxels.NY, NZ = Voxels.NZ;
+            int y0 = Math.max(0, b[1]), h = Math.min(NY - 1, b[4]) - y0 + 1;
+            int[] sx = segments(b[0], b[3], NX), sz = segments(b[2], b[5], NZ);
+            for (int i = 0; i < sx.length; i += 2)
+                for (int k = 0; k < sz.length; k += 2) {
+                    int x0 = sx[i], w = sx[i + 1], z0 = sz[k], d = sz[k + 1];
+                    byte[] data = new byte[w * h * d * 2];
+                    for (int z = 0; z < d; z++)
+                        for (int y = 0; y < h; y++)
+                            System.arraycopy(Voxels.vol, (((z0 + z) * NY + y0 + y) * NX + x0) * 2, data, ((z * h + y) * w) * 2, w * 2);
+                    GLUtil.subTexture3D(volTex, data, x0, y0, z0, w, h, d);
+                }
+        }
+        if (Digging.digDirty()) {
+            int[] b = Digging.dirtyDig;
+            final int S = WorldTextures.HEIGHT_SIZE;
+            int[] sx = segments(b[0], b[2], S), sz = segments(b[1], b[3], S);
+            for (int i = 0; i < sx.length; i += 2)
+                for (int k = 0; k < sz.length; k += 2) {
+                    int x0 = sx[i], w = sx[i + 1], z0 = sz[k], d = sz[k + 1];
+                    int[] data = new int[w * d];
+                    for (int z = 0; z < d; z++)
+                        for (int x = 0; x < w; x++) {
+                            int j = (z0 + z) * S + x0 + x;
+                            data[z * w + x] = WorldTextures.heightTexel(WorldTextures.hFloor[j], Digging.digWin[j]);
+                        }
+                    GLUtil.subTexture(heightTex, data, x0, z0, w, d);
+                }
+        }
+        Digging.clearDirty();
+    }
+
     /** Queue chunks around the player and upload the ones that are ready (a few per frame). */
     private void streamChunks() {
         double sx = px, sz = pz;
@@ -497,7 +552,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             GLUtil.subLuminance(detailTex, c.detail, ox, oy, N, N);
             GLUtil.subLuminance(matTex, c.mat, ox, oy, N, N);
             int[] h = new int[64 * 64];
-            for (int i = 0; i < h.length; i++) h[i] = WorldTextures.heightTexel(c.heights[i]);
+            for (int i = 0; i < h.length; i++) h[i] = WorldTextures.heightTexel(c.heights[i], c.dig[i]);
             GLUtil.subTexture(heightTex, h, Math.floorMod(c.cx * 64, WorldTextures.HEIGHT_SIZE), Math.floorMod(c.cz * 64, WorldTextures.HEIGHT_SIZE), 64, 64);
             for (int j = 0; j < 2; j++)
                 for (int i = 0; i < 2; i++) {

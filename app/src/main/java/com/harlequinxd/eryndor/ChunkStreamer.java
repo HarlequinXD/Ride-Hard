@@ -103,7 +103,15 @@ final class ChunkStreamer {
                     done.add(new Cancelled(k, vol));
                     return;
                 }
-                done.add(vol ? Voxels.fillChunk(cx, cz) : WorldTextures.paintChunk(cx, cz, lib));
+                if (vol) {
+                    Voxels.VolChunk c = Voxels.fillChunk(cx, cz);
+                    Digging.applyTo(c);                               // what you dug stays dug
+                    done.add(c);
+                } else {
+                    WorldTextures.Chunk2D c = WorldTextures.paintChunk(cx, cz, lib);
+                    Digging.maskFor(c);
+                    done.add(c);
+                }
             } catch (Throwable t) {
                 t.printStackTrace();
                 done.add(new Cancelled(k, vol));

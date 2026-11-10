@@ -49,28 +49,27 @@ Hollowspire.
   and two colours. Nothing is a mesh: every pixel's ray walks the 16 m tree cells, steps through
   each species' zone grid and tests the capsules and leaf cards inside. Bark has 4 textures.
   Shadows on the ground are cast from the real branches and leaves.
-- **First-person arms, per pixel**: both arms (leather bracers, a steel plate, studded fingerless
-  gloves) are built from three images: colour, a normal map and a height map, each showing the
-  palm side and the back. The outline is inflated into a solid with round fingers and a flat palm.
-  The height map raises the straps, buckles and studs; the normal map lights every pixel. Each
-  finger is found in the outline and has its own knuckle, so the fingers curl one by one: a
-  relaxed hand that breathes and tightens as you walk. The arms bob with your steps and lag a
-  little when you turn. Nothing is a mesh: each pixel's ray steps through the arm's volume.
-  Rebuild the arm data with `tools/build_arms.py colour.png normal.png height.png out/`.
-- **Physically based rendering**: one shading function for the ground, trees, arms and sword:
+- **First-person arms, per pixel**: smooth distance-field arms traced per pixel: a dark oiled
+  leather bracer with stitching, two straps and iron buckles over each forearm, a linen wrap at
+  the wrist, then bare hands with a padded, slightly cupped palm, knuckle ridges, finger joints and
+  fingernails. Each finger (and the thumb) has its own knuckle and curls on its own: a relaxed hand
+  that breathes and tightens as you walk, and the right hand closes around the pickaxe's handle.
+  The arms bob with your steps and lag a little when you turn. (They no longer come from images,
+  so there are no ragged, spiky edges.)
+- **Physically based rendering**: one shading function for the ground, trees, arms and pickaxe:
   Lambert diffuse plus Cook-Torrance specular (GGX, Smith/Schlick-GGX, Schlick Fresnel) from the
   sun, the sky as hemisphere ambient and as a roughness-blurred reflection (split-sum with an
   analytic environment BRDF), and the lantern as a light at the eye; linear-light maths with a
   soft-shoulder tone map. Roughness per material (grass 0.9, cobbles 0.62, wet ground glossier),
-  metals take their colour as F0 (the sword's steel, the iron guard, brass bands, the arm plates
-  and buckles), and leaves and grass let light through from behind.
+  metals take their colour as F0 (the pickaxe's iron head, the bracers'
+  buckles), and leaves and grass let light through from behind.
 - **Real-time global illumination**: each ground pixel within 45 m casts three short rays over
   the heightmap across its hemisphere (directions dithered per pixel); escaped rays bring sky
   light, rays that hit terrain bring the light bounced off that spot (its colour, lit by sun and
   sky, and how open its sky is). Colour bleeding, ambient occlusion in hollows and caves, and cave
-  mouths lighting the tunnel. Trees, arms and sword get sky plus light bounced up off the meadow.
+  mouths lighting the tunnel. Trees, arms and the pickaxe get sky plus light bounced up off the meadow.
 - **Sun shafts and glare**: the scene writes how much open sky each pixel shows into its alpha
-  (clouds, hills, the Hollowspire, trees, arms and the sword all block it); the final pass blurs
+  (clouds, hills, the Hollowspire, trees, arms and the pickaxe all block it); the final pass blurs
   that mask toward the sun's place on screen (dithered steps) for light shafts through branches
   and around clouds, and adds a sun halo, a horizontal glint and lens ghosts that dim when the
   sun's disc is hidden.
@@ -100,11 +99,15 @@ Hollowspire.
   ray steps so there's no banding; the map itself no longer paints or raises small flora (flowers,
   shrubs, tall grass clumps, reeds, mushroom rings, ferns) or paving joints; rocks, logs,
   stumps, cairns, curbs and walls remain (`WorldTextures.FLORA` turns the flora back on).
-- **Sword, per pixel**: a longsword in the right hand: a diamond-section steel blade with a
-  fuller and honed edges that mirror the sky, a blackened-iron crossguard with brass bands, a
-  spiral leather grip and a pommel. Each pixel traces its distance-field shapes. The right hand's
-  fingers bend around one grip line fitted through the knuckles, so they close on the handle;
-  the grip is round, so the blade is turned to show its flat. On PC, B / F sheathes and draws it.
+- **Pickaxe and digging**: an iron pickaxe in the right hand, traced per pixel: one curved forged
+  head through the top of an ash handle, a sharp point on one side and a narrow chisel blade on
+  the other, dark iron worn bright at the tips, both head and handle caked with dirt (the grip is
+  rubbed clean). Left click / RT swings it: wind up, strike, recover (hold to keep digging). Where
+  it lands (up to 3 m ahead, along your view) it bites a rough scoop out of the voxel ground, and
+  5-9 clods of dirt break off and fly out of the bite. They tumble, bounce and roll against the
+  real terrain, and where each comes to rest it adds a lump of loose dirt to the ground, so hitting
+  one spot digs a hole with a spoil heap around it. Dug and heaped ground shows as bare earth. What
+  you dig is kept per chunk and comes back when you return. F / B puts the pickaxe away.
 - **Tree Builder** (button top-left): pick any of the 10 species and edit it with sliders in six
   tabs (Trunk, Branches, Sub-branches, Twigs, Leaves, Bark): height, bend, flare, branch count,
   angle, droop, twig density, leaf shape, size, count and colours, bark type and colour. The tree
@@ -146,7 +149,8 @@ last ten years).
 | Look | Right stick | Mouse (click the window; Esc frees the mouse) |
 | Change the weather | Y | Q |
 | Speed up time | X | T |
-| Draw / sheathe the sword | B | F |
+| Swing the pickaxe (dig) | RT | Left click (hold to keep digging) |
+| Take out / put away the pickaxe | B | F |
 | Invert look | Click right stick | I |
 | Show / hide help | View or Menu | F1 |
 | Full screen | | F11 or Alt+Enter |

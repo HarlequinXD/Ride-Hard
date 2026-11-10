@@ -425,17 +425,18 @@ final class WorldTextures {
         return h;
     }
 
-    /** Height texture data for the window: R floor (= G ceiling = B top), A openness (8 bits each). */
+    /** Height texture data for the window (see heightTexel). */
     static int[] heightTexture() {
         int n = hFloor.length;
         int[] out = new int[n];
-        for (int i = 0; i < n; i++) out[i] = heightTexel(hFloor[i]);
+        for (int i = 0; i < n; i++) out[i] = heightTexel(hFloor[i], Digging.digWin[i]);
         return out;
     }
 
-    static int heightTexel(float h) {
+    /** Height texel: R = B = ground height, G = bare dug / heaped dirt (0..255), A = 255. */
+    static int heightTexel(float h, byte dig) {
         int r = Math.round(h / HEIGHT_MAX * 255f);
-        return (255 << 24) | (r << 16) | (r << 8) | r;
+        return (255 << 24) | (r << 16) | ((dig & 255) << 8) | r;
     }
 
     /** Bilinear sample of the window heights, matching GL_LINEAR on the height texture. */
@@ -512,6 +513,7 @@ final class WorldTextures {
         final byte[] detail = new byte[CHUNK_PX * CHUNK_PX], mat = new byte[CHUNK_PX * CHUNK_PX];
         final float[] heights = new float[64 * 64];       // 0.5 m samples
         final byte[] trees = new byte[2 * 2 * 4];         // its 2 x 2 tree cells
+        final byte[] dig = new byte[64 * 64];             // bare dirt where it was dug or heaped (0.5 m)
 
         Chunk2D(int cx, int cz) {
             this.cx = cx;
@@ -737,7 +739,10 @@ final class WorldTextures {
             System.arraycopy(c.mat, src, matWin, dst, N);
         }
         int hx = Math.floorMod(c.cx * 64, HEIGHT_SIZE), hz = Math.floorMod(c.cz * 64, HEIGHT_SIZE);
-        for (int y = 0; y < 64; y++) System.arraycopy(c.heights, y * 64, hFloor, (hz + y) * HEIGHT_SIZE + hx, 64);
+        for (int y = 0; y < 64; y++) {
+            System.arraycopy(c.heights, y * 64, hFloor, (hz + y) * HEIGHT_SIZE + hx, 64);
+            System.arraycopy(c.dig, y * 64, Digging.digWin, (hz + y) * HEIGHT_SIZE + hx, 64);
+        }
         for (int j = 0; j < 2; j++)
             for (int i = 0; i < 2; i++) {
                 int tx = Math.floorMod(c.cx * 2 + i, TREE_GRID), tz = Math.floorMod(c.cz * 2 + j, TREE_GRID);

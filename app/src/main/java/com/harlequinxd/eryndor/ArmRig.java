@@ -17,9 +17,79 @@ final class ArmRig {
      *  bend around one shared grip line so they close on the sword's handle. */
     final float[] fingers = ArmFingers.PIVOT_DIR.clone();
     private final float[] gripFingers = ArmFingers.PIVOT_DIR.clone();
-    /** Sword in the right arm's grid space: grip centre, blade direction, edge direction. */
+    /** The pickaxe in the right arm's grid space: grip centre, haft direction, head direction.
+     *  (Named for the sword it replaced; the shapes live in scene.frag.) */
     final float[] swordO = new float[3], swordB = new float[3], swordE = new float[3];
+    /** Pickaxe in hand. */
     volatile boolean sword = true;
+
+    // ---- the swing: wind up, strike, recover
+    static final float SWING_TIME = 0.62f, IMPACT_AT = 0.50f;
+    private float swingT = -1f;
+    private boolean impactDue;
+    /** Recoil after the head bites into the ground (0..1), set by the renderer on a hit. */
+    private float recoil;
+
+    /** Start a swing if the pickaxe is in hand and not already swinging. */
+    boolean startSwing() {
+        if (!sword || swingT >= 0f) return false;
+        swingT = 0f;
+        impactDue = true;
+        return true;
+    }
+
+    boolean swinging() {
+        return swingT >= 0f;
+    }
+
+    /** True once per swing, the frame the head comes down. */
+    boolean takeImpact() {
+        if (impactDue && swingT >= SWING_TIME * IMPACT_AT) {
+            impactDue = false;
+            return true;
+        }
+        return false;
+    }
+
+    /** The head struck something solid: a short jolt back up. */
+    void bite() {
+        recoil = 1f;
+    }
+
+    /** Swing offsets: forearm pitch, wrist height, wrist depth (camera space). */
+    private final float[] swingOff = new float[3];
+
+    private void swingPose(float dt) {
+        swingOff[0] = swingOff[1] = swingOff[2] = 0f;
+        recoil = Math.max(0f, recoil - dt * 5f);
+        if (swingT < 0f) return;
+        swingT += dt;
+        float p = swingT / SWING_TIME;
+        if (p >= 1f) { swingT = -1f; return; }
+        float up, y, z;
+        if (p < 0.30f) {                                   // wind up: raise and draw back
+            float k = smooth(p / 0.30f);
+            up = 0.45f * k; y = 0.07f * k; z = 0.05f * k;
+        } else if (p < IMPACT_AT) {                        // strike: fast and accelerating
+            float k = (p - 0.30f) / (IMPACT_AT - 0.30f);
+            k = k * k;
+            up = 0.45f - 1.60f * k; y = 0.07f - 0.15f * k; z = 0.05f - 0.10f * k;
+        } else if (p < 0.62f) {                            // the blow lands; hold
+            up = -1.15f; y = -0.08f; z = -0.05f;
+        } else {                                           // bring it back up
+            float k = smooth((p - 0.62f) / 0.38f);
+            up = -1.15f * (1f - k); y = -0.08f * (1f - k); z = -0.05f * (1f - k);
+        }
+        float r = recoil * recoil;
+        swingOff[0] = up + 0.35f * r;
+        swingOff[1] = y + 0.03f * r;
+        swingOff[2] = z;
+    }
+
+    private static float smooth(float t) {
+        t = Math.max(0f, Math.min(1f, t));
+        return t * t * (3f - 2f * t);
+    }
 
     /** Radius (grid units) the fingers wrap at: grip radius plus half a finger's thickness. */
     static final float GRIP_WRAP = 24f;
@@ -94,6 +164,7 @@ final class ArmRig {
      */
     void update(float dt, float lookDx, float lookDy, float walk, float bobPhase) {
         time += dt;
+        swingPose(dt);
         // the arms lag a little behind fast turns, then settle
         swayX += (-lookDx * 0.9f - swayX) * Math.min(1f, dt * 8f);
         swayY += (-lookDy * 0.9f - swayY) * Math.min(1f, dt * 8f);
@@ -123,9 +194,9 @@ final class ArmRig {
             // wrist low in the corner, forearm pointing ahead, a little inward and up
             boolean holds = sword && arm == 0;
             float wx = side * (holds ? SW_X : WRIST_X) + swayX + side * bobX;
-            float wy = (holds ? SW_Y : WRIST_Y) + swayY - bobY + 0.004f * breathe;
-            float wz = holds ? SW_Z : WRIST_Z;
-            float[] ex = holds ? norm(-SW_IN, SW_UP, -1f) : norm(-side * AIM_IN, AIM_UP, -1f);
+            float wy = (holds ? SW_Y + swingOff[1] : WRIST_Y) + swayY - bobY + 0.004f * breathe;
+            float wz = holds ? SW_Z + swingOff[2] : WRIST_Z;
+            float[] ex = holds ? norm(-SW_IN, SW_UP + swingOff[0], -1f) : norm(-side * AIM_IN, AIM_UP, -1f);
             // back of the hand faces up and a little outward (palms down, thumbs in)
             float roll = holds ? SW_ROLL : ROLL;
             float[] up = {side * (float) Math.sin(roll), (float) Math.cos(roll), 0f};

@@ -4,6 +4,8 @@ package com.harlequinxd.eryndor;
 final class Input {
     /** Virtual touch pad, -1..1. moveY > 0 = forward, moveX > 0 = strafe right. */
     volatile float moveX, moveY;
+    /** Swing the pickaxe (held = keep swinging). */
+    volatile boolean swingHeld;
 
     private float lookX, lookY;
 
