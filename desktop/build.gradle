@@ -1,0 +1,54 @@
+// Windows / Linux desktop build of Chronicles of Eryndor: Hollowspire.
+// Shares the game code and assets with the Android app; android.* GL classes are provided by small
+// stand-ins in src/main/java that forward to desktop OpenGL through LWJGL.
+plugins {
+    id 'application'
+}
+
+group = 'com.harlequinxd.eryndor'
+version = '1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+repositories {
+    mavenCentral()
+}
+
+def lwjglVersion = '3.3.4'
+
+dependencies {
+    implementation platform("org.lwjgl:lwjgl-bom:$lwjglVersion")
+    ['lwjgl', 'lwjgl-glfw', 'lwjgl-opengl'].each { m ->
+        implementation "org.lwjgl:$m"
+        runtimeOnly "org.lwjgl:$m::natives-windows"
+        runtimeOnly "org.lwjgl:$m::natives-linux"
+    }
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src/main/java', '../app/src/main/java']
+            // Android-only screens (touch controls, the Tree Builder UI, the activity)
+            exclude '**/MainActivity.java', '**/ControlsView.java', '**/TreeBuilderView.java'
+        }
+        resources {
+            srcDirs = ['../app/src/main/assets']
+        }
+    }
+}
+
+application {
+    mainClass = 'com.harlequinxd.eryndor.DesktopMain'
+    applicationDefaultJvmArgs = ['-Xmx2g']
+}
+
+jar {
+    archiveFileName = 'eryndor.jar'
+    manifest {
+        attributes 'Main-Class': 'com.harlequinxd.eryndor.DesktopMain'
+    }
+}

@@ -66,6 +66,27 @@ Hollowspire.
   nearest-neighbour upscale, 15-bit ordered dither.
 - **Controls**: touch pad on the left 45% of the screen to walk, swipe anywhere else to look.
 
+## PC (Windows)
+
+Download `Eryndor-Windows.zip` from the latest release, unzip it and run `Eryndor\Eryndor.exe`.
+Java is bundled; no install needed. It needs a graphics driver with OpenGL 3.3 (any PC from the
+last ten years).
+
+| | Xbox controller | Keyboard and mouse |
+|---|---|---|
+| Walk | Left stick | WASD / arrow keys |
+| Look | Right stick | Mouse (click the window; Esc frees the mouse) |
+| Change the weather | Y | Q |
+| Speed up time | X | T |
+| Invert look | Click right stick | I |
+| Show / hide help | View or Menu | F1 |
+| Full screen | | F11 or Alt+Enter |
+
+The world cache, saved tree designs and `eryndor.log` live in `%APPDATA%\ChroniclesOfEryndor`.
+The PC version runs the same code as the phone (`desktop/` adds the window, controls, HUD and small
+stand-ins for Android's GL classes). The Tree Builder is phone-only for now.
+Build it yourself with `gradle -p desktop run`.
+
 ## Build
 
 GitHub Actions builds a debug APK on every push and attaches it to the **latest** release
