@@ -69,6 +69,10 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private int treePrimTex, treeCellTex, treeIdxTex, leafAtlasTex, uploadedTreeVersion = -1;
     // first-person arms: colour / normal / height sheets (decoded off the GL thread)
     private int armColTex, armNrmTex, armHgtTex;
+    // grass texture set: colour, and normal map + height packed together (tiling, point sampled)
+    private int grassColTex, grassNHTex;
+    private int[][] grassData;
+    private int grassSize;
     private int[][] armData;
     private int[] armW = new int[3], armH = new int[3];
     private final ArmRig arms = new ArmRig();
@@ -121,6 +125,17 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         ground = TreeShadows.apply(ground, WorldTextures.trees(), lib);
         detailData = WorldTextures.detail();
         matData = WorldTextures.materials();
+        // the painted terrain mask (if the game ships one) decides which texture goes where
+        try {
+            Bitmap mask = readBitmap("terrain/terrain_mask.png");
+            int mw = mask.getWidth(), mh = mask.getHeight();
+            int[] px = new int[mw * mh];
+            mask.getPixels(px, 0, mw, 0, 0, mw, mh);
+            mask.recycle();
+            matData = TerrainMask.decode(px, mw, mh, WorldTextures.GROUND_SIZE);
+        } catch (IllegalStateException noMask) {
+            // no mask: keep the generated materials
+        }
         fernData = WorldTextures.ferns();
         treeData = WorldTextures.trees();
         Loading.set("Shaping your arms", 0.825f);
@@ -135,6 +150,16 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             b.recycle();
         }
         armData = ad;
+        int[][] gd = new int[2][];
+        String[] grass = {"grass/grass_col.png", "grass/grass_nh.png"};
+        for (int i = 0; i < 2; i++) {
+            Bitmap b = readBitmap(grass[i]);
+            grassSize = b.getWidth();
+            gd[i] = new int[grassSize * grassSize];
+            b.getPixels(gd[i], 0, grassSize, 0, 0, grassSize, grassSize);
+            b.recycle();
+        }
+        grassData = gd;
         Loading.set("Gathering the clouds", 0.83f);
         cloudData = WorldTextures.clouds();
         heightData = heights;
@@ -162,6 +187,9 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         armNrmTex = GLUtil.atlas(armData[1], armW[1], armH[1]);
         armHgtTex = GLUtil.atlas(armData[2], armW[2], armH[2], false);   // shape: stays smooth
         armData = null;
+        grassColTex = GLUtil.texture(grassData[0], grassSize, true);    // repeating, point sampled
+        grassNHTex = GLUtil.texture(grassData[1], grassSize, true);
+        grassData = null;
         uploadTrees();
         Loading.set("Lighting the lanterns", 0.99f);
         eyeY = Float.NaN;
@@ -396,6 +424,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         bindTex(11, armColTex, "uArmCol");
         bindTex(12, armNrmTex, "uArmNrm");
         bindTex(13, armHgtTex, "uArmHgt");
+        bindTex(14, grassColTex, "uGrassCol");
+        bindTex(15, grassNHTex, "uGrassNH");
         GLES20.glUniformMatrix3fv(u(sceneProg, "uArmRot"), 2, false, arms.rot, 0);
         GLES20.glUniform3fv(u(sceneProg, "uArmPos"), 2, arms.pos, 0);
         GLES20.glUniform4fv(u(sceneProg, "uFing"), 10, arms.fingers, 0);

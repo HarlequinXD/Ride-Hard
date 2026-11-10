@@ -36,6 +36,25 @@ Hollowspire.
   relaxed hand that breathes and tightens as you walk. The arms bob with your steps and lag a
   little when you turn. Nothing is a mesh: each pixel's ray steps through the arm's volume.
   Rebuild the arm data with `tools/build_arms.py colour.png normal.png height.png out/`.
+- **Terrain texture mask**: `app/src/main/assets/terrain/terrain_mask.png` (2048 x 2048, one
+  pixel per 12.5 cm) is a painted colour map that picks the texture for each patch of ground.
+  Colours snap to the nearest palette entry, so soft brushes work:
+
+  | Colour | Hex | Texture |
+  |---|---|---|
+  | green | `#2EB82E` | grass (the grass texture set) |
+  | brown | `#8C5A28` | earth / dirt |
+  | grey | `#808080` | stone |
+  | dark brown | `#4A2810` | wood |
+  | blue | `#1E5AFF` | water |
+  | dark green | `#0F5A28` | plants |
+
+  Delete the file to go back to the generated layout; `TerrainMaskExport` writes a fresh one.
+- **Grass texture set**: tiling colour, normal map and height map (`tools/build_grass.py` makes
+  them seamless and packs normal + height). Grass shows the photo's own colour, lit by its normal
+  map, point sampled, with tree shadows on top; two placements, one turned and larger, are mixed
+  per pixel by a dithered noise so the tile doesn't repeat visibly. Small detail comes only from
+  the textures (no grass bumps in the terrain).
 - **Sword, per pixel**: a longsword in the right hand: a diamond-section steel blade with a
   fuller and honed edges that mirror the sky, a blackened-iron crossguard with brass bands, a
   spiral leather grip and a pommel. Each pixel traces its distance-field shapes. The right hand's

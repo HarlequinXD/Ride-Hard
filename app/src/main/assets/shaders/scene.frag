@@ -12,7 +12,7 @@ precision highp sampler2D;
 in vec2 vUv;
 out vec4 fragColor;
 
-uniform sampler2D uGround;   // rgb = ground colour, a = 1 land / 0 open water
+uniform sampler2D uGround;   // rgb = ground colour, a = 0 open water, 0.5..1 land (lit fraction: tree shadows)
 uniform sampler2D uCloud;
 uniform sampler2D uHeight;   // r = floor, g = cave ceiling, b = rock top, a = sky openness
 uniform sampler2D uDetail;   // fine relief on the floor: grass, pebbles, shrubs, rocks, walls (0..3 m)
@@ -38,6 +38,8 @@ uniform vec3 uSwordO;         // sword in right-arm grid space: grip centre,
 uniform vec3 uSwordB;         //   blade direction (out of the thumb side),
 uniform vec3 uSwordE;         //   edge direction
 uniform float uSwordShow;
+uniform sampler2D uGrassCol;  // grass photo, tiling, point sampled
+uniform sampler2D uGrassNH;   // grass normal map (r, g) and height map (b)
 
 uniform vec2 uTanHalf;
 uniform float uYaw;
@@ -173,9 +175,20 @@ vec3 skyColor(vec3 d) {
 
 // ---- per-pixel grass: individual blades computed at the exact point each ray reaches
 const float GFAR = 12.0;
-float grassBlades(vec2 xz) {
-    return 0.13 * pow(hash(floor(xz * 40.0)), 3.0) + 0.05 * vnoise(xz * 12.0);
+// ---- grass texture set: two placements (the second turned 90 degrees and larger) picked per pixel
+//      by a dithered noise, so the 1.25 m tile doesn't show as a repeating pattern
+const float GRASS_TILE = 1.25, GRASS_TILE2 = 1.7;
+
+vec2 grassUV(vec2 xz, out float turned) {
+    float k = vnoise(xz * 0.31 + 11.0) + (bayer4(gl_FragCoord.xy) - 0.5) * 0.22;
+    turned = step(0.5, k);
+    return turned > 0.5 ? vec2(-xz.y, xz.x) / GRASS_TILE2 + vec2(0.37, 0.61) : xz / GRASS_TILE;
 }
+
+float grassLod(float t) {          // texture level for a pixel 160 lines tall at distance t
+    return log2(max(1.0, t * 2.0 * uTanHalf.y / 160.0 / (GRASS_TILE / 512.0)));
+}
+
 
 // ---- 3D ferns, evaluated per pixel as an implicit shape (no geometry, no voxel grid)
 const float FERN_CELL = 4.0;
@@ -633,8 +646,6 @@ void main() {
         vec4 hm = texture(uHeight, p.xz / 256.0) * HMAX;
         float det = 0.0;
         if (t < DFAR) det = texture(uDetail, p.xz / 256.0).r * DMAX * detailFade(t);
-        if (t < GFAR && texture(uMat, p.xz / 256.0).r < 0.08)
-            det += grassBlades(p.xz) * smoothstep(GFAR, GFAR * 0.35, t);
         float near = 0.0;
         vec3 fc;
         if (t < FERN_FAR && fernAt(p, fc, near)) { hitT = t; isFern = 1.0; fcol = fc; break; }
@@ -661,8 +672,6 @@ void main() {
             } else {
                 vec4 hm = texture(uHeight, p.xz / 256.0) * HMAX;
                 float det = texture(uDetail, p.xz / 256.0).r * DMAX * detailFade(m);
-                if (m < GFAR && texture(uMat, p.xz / 256.0).r < 0.08)
-                    det += grassBlades(p.xz) * smoothstep(GFAR, GFAR * 0.35, m);
                 solid = p.y < hm.r + det || (p.y > hm.g && p.y < hm.b);
             }
             if (solid) b = m; else a = m;
@@ -717,6 +726,23 @@ void main() {
     float msx = (microHeight(wp + vec2(eps, 0.0), mid) - m0) / eps;
     float msz = (microHeight(wp + vec2(0.0, eps), mid) - m0) / eps;
     float mk = mf * (1.0 - steep * 0.7);
+    // grass: colour, normal map and height from the grass texture set (replaces the made-up detail)
+    float isGrass = step(mid, 0.5) * (1.0 - step(0.5, kind)) * (1.0 - useTop);
+    vec3 grassAlb = vec3(0.0);
+    if (isGrass > 0.5) {
+        float turned, glod = grassLod(T);
+        vec2 guv = grassUV(wp, turned);
+        vec3 gc = textureLod(uGrassCol, guv, glod).rgb;
+        vec2 tn = textureLod(uGrassNH, guv, glod).rg * 2.0 - 1.0;
+        // the photo's own colour (the terrain mask picked grass here); tree shadows from the ground alpha
+        float lit = clamp(gt.a * 2.0 - 1.0, 0.45, 1.0);
+        grassAlb = gc * 0.92 * lit;
+        vec2 wxz = turned > 0.5 ? vec2(-tn.y, -tn.x) : vec2(tn.x, -tn.y);
+        float nz = sqrt(max(0.0, 1.0 - dot(tn, tn)));
+        float gk = 1.0 - steep * 0.7;
+        n = normalize(vec3(n.x * nz + wxz.x * gk, n.y * nz, n.z * nz + wxz.y * gk));
+        mk = 0.0;                                   // no procedural bumps on top
+    }
     if (kind < 0.5) n = normalize(n + vec3(-msx, 0.0, -msz) * mk * 1.6);
     else n = normalize(n + vec3(-msx, 0.0, -msz) * mk * 0.8);
     if (isFern > 0.5) {
@@ -730,7 +756,7 @@ void main() {
     float under = step(q.y, hq.b * HMAX - 0.5);   // below the top of the rock here: cave, wall or cutting
     float open = mix(1.0, hq.a, under * hit);
 
-    float water = (1.0 - gt.a) * hit * (1.0 - steep) * (1.0 - isFern);
+    float water = (1.0 - clamp(gt.a * 2.0, 0.0, 1.0)) * hit * (1.0 - steep) * (1.0 - isFern);
 
     // ---- one sky evaluation: the sky above, its mirror image in water below
     vec2 rip = vec2(vnoise(wp * 1.6 + uTime * 0.7), vnoise(wp * 1.6 - uTime * 0.55 + 7.0)) - 0.5;
@@ -751,7 +777,7 @@ void main() {
     vec3 lantern = vec3(1.0, 0.70, 0.40) * 1.6 / (1.0 + T * T * 0.09) * max(dot(n, -d), 0.25) * dark;
     light += lantern;
 
-    vec3 albedo = isFern > 0.5 ? fcol * (0.85 + 0.3 * hash(floor(wp * 60.0))) : gt.rgb * micro;
+    vec3 albedo = isFern > 0.5 ? fcol * (0.85 + 0.3 * hash(floor(wp * 60.0))) : (isGrass > 0.5 ? grassAlb : gt.rgb * micro);
     vec3 hpT = (floor(hp * 24.0) + 0.5) / 24.0;                       // rock texels, 4 cm
     vec3 rock = vec3(0.47, 0.45, 0.42) * rockTex(hpT);
     rock = mix(rock, vec3(0.30, 0.36, 0.20) * rockTex(hpT * 1.7), smoothstep(0.55, 0.85, n.y) * 0.5 * (1.0 - kind));

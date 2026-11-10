@@ -51,7 +51,10 @@ final class TreeShadows {
             float k = 1f - Math.min(0.55f, dark[i]);
             int v = out[i];
             int r = Math.round(((v >> 16) & 255) * k), g = Math.round(((v >> 8) & 255) * k), b = Math.round((v & 255) * k);
-            out[i] = (v & 0xFF000000) | (r << 16) | (g << 8) | b;
+            // alpha: 0 = water; land stores how lit it is (0.5..1), so textured ground (the grass
+            // photo, which ignores the colour) still gets the tree shadows
+            int a = (v >>> 24) == 0 ? 0 : Math.round(255f * (0.5f + 0.5f * k));
+            out[i] = (a << 24) | (r << 16) | (g << 8) | b;
         }
         return out;
     }
