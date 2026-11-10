@@ -91,7 +91,7 @@ Hollowspire.
 - **Day/night**: full 24 h in 8 minutes (x20 with the Time button).
 - **Weather**: clear, cloudy, overcast, rain (wet ground), thunderstorm (lightning) and mist.
   Changes on its own; the Weather button cycles it.
-- **Look**: PS1 resolution (160 lines, width follows the screen so it fills the whole display),
+- **Look**: PS1 resolution (240 lines, width follows the screen so it fills the whole display),
   nearest-neighbour upscale, 15-bit ordered dither.
 - **Controls**: touch pad on the left 45% of the screen to walk, swipe anywhere else to look.
 
