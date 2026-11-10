@@ -58,37 +58,70 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         this.cacheDir = cacheDir;
     }
 
+    // world data built off the GL thread, then uploaded once ready
+    private volatile boolean dataReady;
+    private Thread builder;
+    private int[] heightData, groundData, cloudData;
+    private byte[] detailData, matData, fernData, treeData;
+    private boolean uploaded;
+
     @Override
     public void onSurfaceCreated(GL10 unused, EGLConfig config) {
+        // Keep this fast: Android waits for the first frame before showing the window, so the
+        // heavy world building runs on a background thread while we draw blank frames and the
+        // loading screen (a normal View above us) shows progress.
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glDisable(GLES20.GL_CULL_FACE);
-        Loading.set("Waking the realm", 0.01f);
-        String vs = GLUtil.asset(assets, "shaders/fullscreen.vert");
-        sceneProg = GLUtil.program(vs, GLUtil.asset(assets, "shaders/scene.frag"));
-        blitProg = GLUtil.program(vs, GLUtil.asset(assets, "shaders/blit.frag"));
+        sceneProg = blitProg = 0;
         sceneU.clear();
         blitU.clear();
-
-        int[] heights = WorldTextures.heightTexture();             // shaping the land, carving Hollow Hill
-        int[] ground = loadGround();                                // painting (or reading the saved world)
-        Loading.set("Uploading the land", 0.84f);
-        groundTex = GLUtil.texture(ground, WorldTextures.GROUND_SIZE, false);
-        heightTex = GLUtil.texture(heights, WorldTextures.HEIGHT_SIZE, false, true);
-        Loading.set("Uploading the fine relief", 0.89f);
-        detailTex = GLUtil.luminance(WorldTextures.detail(), WorldTextures.GROUND_SIZE);
-        matTex = GLUtil.luminance(WorldTextures.materials(), WorldTextures.GROUND_SIZE, true);
-        fernTex = GLUtil.cells(WorldTextures.ferns(), WorldTextures.FERN_GRID);
-        treeTex = GLUtil.cells(WorldTextures.trees(), WorldTextures.TREE_GRID);
-        Loading.set("Gathering the clouds", 0.94f);
-        cloudTex = GLUtil.texture(WorldTextures.clouds(), WorldTextures.CLOUD_SIZE, false);
-        Loading.set("Lighting the lanterns", 0.98f);
-        eyeY = Float.NaN;
-
+        uploaded = false;
         float[] q = {-1, -1, 1, -1, -1, 1, 1, 1};
         quad = ByteBuffer.allocateDirect(q.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
         quad.put(q).position(0);
         fbo = 0;
         fboW = fboH = 0;
+        lastNanos = System.nanoTime();
+        if (builder == null) {
+            builder = new Thread(this::buildWorld, "world-builder");
+            builder.setPriority(Thread.NORM_PRIORITY - 1);
+            builder.start();
+        }
+    }
+
+    private void buildWorld() {
+        Loading.set("Waking the realm", 0.01f);
+        int[] heights = WorldTextures.heightTexture();             // shaping the land, carving Hollow Hill
+        int[] ground = loadGround();                                // painting (or reading the saved world)
+        detailData = WorldTextures.detail();
+        matData = WorldTextures.materials();
+        fernData = WorldTextures.ferns();
+        treeData = WorldTextures.trees();
+        Loading.set("Gathering the clouds", 0.83f);
+        cloudData = WorldTextures.clouds();
+        heightData = heights;
+        groundData = ground;
+        Loading.set("Compiling the shaders", 0.85f);
+        dataReady = true;
+    }
+
+    /** Runs on the GL thread once the builder is done: compile shaders and upload everything. */
+    private void uploadWorld() {
+        String vs = GLUtil.asset(assets, "shaders/fullscreen.vert");
+        sceneProg = GLUtil.program(vs, GLUtil.asset(assets, "shaders/scene.frag"));
+        blitProg = GLUtil.program(vs, GLUtil.asset(assets, "shaders/blit.frag"));
+        Loading.set("Uploading the land", 0.90f);
+        groundTex = GLUtil.texture(groundData, WorldTextures.GROUND_SIZE, false);
+        heightTex = GLUtil.texture(heightData, WorldTextures.HEIGHT_SIZE, false, true);
+        Loading.set("Uploading the fine relief", 0.94f);
+        detailTex = GLUtil.luminance(detailData, WorldTextures.GROUND_SIZE);
+        matTex = GLUtil.luminance(matData, WorldTextures.GROUND_SIZE, true);
+        fernTex = GLUtil.cells(fernData, WorldTextures.FERN_GRID);
+        treeTex = GLUtil.cells(treeData, WorldTextures.TREE_GRID);
+        cloudTex = GLUtil.texture(cloudData, WorldTextures.CLOUD_SIZE, false);
+        Loading.set("Lighting the lanterns", 0.99f);
+        eyeY = Float.NaN;
+        uploaded = true;
         lastNanos = System.nanoTime();
         Loading.set("Ready", 1f);
         sky.worldReady = true;
@@ -182,6 +215,18 @@ final class GameRenderer implements GLSurfaceView.Renderer {
 
     @Override
     public void onDrawFrame(GL10 unused) {
+        if (!uploaded) {
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+            GLES20.glViewport(0, 0, Math.max(1, scrW), Math.max(1, scrH));
+            GLES20.glClearColor(0.04f, 0.05f, 0.07f, 1f);
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+            if (dataReady) uploadWorld();
+            else {
+                try { Thread.sleep(30); } catch (InterruptedException ignored) { }
+                return;
+            }
+            if (fbo == 0 && scrW > 0) createFbo(Math.max(1, Math.round(LOW_RES_LINES * (float) scrW / scrH)), LOW_RES_LINES);
+        }
         long now = System.nanoTime();
         float dt = Math.min(0.1f, (now - lastNanos) / 1e9f);
         lastNanos = now;
