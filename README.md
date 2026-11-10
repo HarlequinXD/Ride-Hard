@@ -20,6 +20,11 @@ Hollowspire.
   every grass blade has its own height. **Ferns are 3D**: an implicit shape (fronds that rise,
   arch and droop, leaflets with gaps, air underneath) tested by each pixel's ray; no meshes, no
   voxel grid.
+- **Per-pixel normal mapping**: every material has a tiny height field (grass blade streaks,
+  earth grains and pebbles, stone pitting and hairline cracks, wood grain, water ripples). Each
+  pixel derives its normal from it with differences sized to its footprint on the ground, adds the
+  terrain slope and the 12.5 cm relief, and is lit by the sun with soft specular on stone and wet
+  ground.
 - **Loading screen**: title, a real progress bar and the stage being built (shaping the land,
   carving Hollow Hill, painting meadows, planting ferns...). After the first run the world is
   read back from a save, which is much quicker.

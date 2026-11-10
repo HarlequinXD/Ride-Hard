@@ -231,6 +231,28 @@ vec3 microAlbedo(vec2 wp, float mid, out vec2 bump) {
     return m;
 }
 
+// ---- per-pixel normal mapping: a tiny height field (metres) for each material
+float microHeight(vec2 wp, float mid) {
+    if (mid < 0.5) {                               // grass: streaky blades leaning with a slow swirl
+        float a = vnoise(wp * 0.7) * 6.2831;
+        vec2 r = vec2(cos(a) * wp.x + sin(a) * wp.y, -sin(a) * wp.x + cos(a) * wp.y);
+        return 0.012 * vnoise(r * vec2(70.0, 12.0)) + 0.008 * vnoise(wp * 35.0);
+    } else if (mid < 1.5) {                        // earth: grains and little pebbles
+        vec2 c = floor(wp * 22.0);
+        vec2 f = fract(wp * 22.0) - 0.5;
+        float peb = step(0.80, hash(c)) * max(0.0, 0.16 - dot(f, f)) * 0.08;
+        return 0.006 * vnoise(wp * 28.0) + 0.003 * vnoise(wp * 90.0) + peb;
+    } else if (mid < 2.5) {                        // stone: pitting and hairline cracks
+        float crack = smoothstep(0.03, 0.0, abs(vnoise(wp * 6.0) - 0.5)) * 0.004;
+        return 0.0025 * vnoise(wp * 60.0) + 0.0015 * vnoise(wp * 160.0) - crack;
+    } else if (mid < 3.5) {                        // wood: grain ridges
+        return 0.003 * sin(wp.x * 90.0 + vnoise(wp * 8.0) * 6.0) + 0.002 * vnoise(wp * 50.0);
+    } else if (mid < 4.5) {                        // water: wind ripples
+        return 0.006 * vnoise(wp * 7.0 + uTime * vec2(0.6, 0.3)) + 0.003 * vnoise(wp * 19.0 - uTime * vec2(0.4, 0.7));
+    }
+    return 0.010 * vnoise(wp * 40.0) + 0.006 * vnoise(wp * 13.0);   // leafy plants
+}
+
 float rockTex(vec3 p) {
     float n = vnoise(vec2(p.x + p.z, p.y) * 2.2) * 0.55 + vnoise(vec2(p.x - p.z, p.y * 3.0) * 5.0) * 0.30
             + hash(floor(vec2(p.x * 7.0 + p.z * 5.0, p.y * 8.0))) * 0.15;
@@ -333,7 +355,14 @@ void main() {
     vec3 micro = microAlbedo(wp, mid, bump);
     float mf = smoothstep(30.0, 5.0, T) * (1.0 - useTop * 0.5);
     micro = mix(vec3(1.0), micro, mf);
-    n = normalize(n + vec3(bump.x, 0.0, bump.y) * 0.45 * mf * (1.0 - steep));
+    // per-pixel normal map: finite differences sized to this pixel's footprint on the ground
+    float eps = clamp(T * 0.0085, 0.006, 0.08);
+    float m0 = microHeight(wp, mid);
+    float msx = (microHeight(wp + vec2(eps, 0.0), mid) - m0) / eps;
+    float msz = (microHeight(wp + vec2(0.0, eps), mid) - m0) / eps;
+    float mk = mf * (1.0 - steep * 0.7);
+    if (kind < 0.5) n = normalize(n + vec3(-msx, 0.0, -msz) * mk * 1.6);
+    else n = normalize(n + vec3(-msx, 0.0, -msz) * mk * 0.8);
     if (isFern > 0.5) {
         n = normalize(vec3(0.0, 1.0, 0.0) + vec3(hash(floor(wp * 30.0)) - 0.5, 0.0, hash(floor(wp * 30.0) + 3.0) - 0.5) * 0.6);
         steep = 0.0;
@@ -359,7 +388,7 @@ void main() {
     //      cloud shadows, darkness under rock, and a lantern near the player
     vec2 sOff = uSunDir.xz / max(uSunDir.y, 0.2) * CLOUD_H;
     float shadow = coverage(cloudField(uCloudO + (wp - ro.xz) + sOff));
-    float sunRel = clamp(0.80 + 0.9 * (dot(n, uSunDir) - max(uSunDir.y, 0.05)), 0.35, 1.35);
+    float sunRel = clamp(0.78 + 1.15 * (dot(n, uSunDir) - max(uSunDir.y, 0.05)), 0.25, 1.45);
     vec3 light = uAmbient * mix(1.0, sunRel, uSunVis) * (1.0 - 0.42 * shadow * uSunVis);
     light *= mix(0.05, 1.0, open);
     float dark = clamp(1.0 - open * (1.0 - uStars * 0.85), 0.0, 1.0);   // caves, and night outside
@@ -372,6 +401,11 @@ void main() {
     albedo = mix(albedo, rock, steep);
 
     vec3 land = albedo * light * mix(1.0, 0.62, uWet * open);
+    // soft specular glints: stone and wet ground catch the sun along the normal-mapped surface
+    vec3 hv = normalize(uSunDir - d);
+    float specK = (mid > 1.5 && mid < 2.5 ? 0.10 : 0.02) + 0.45 * uWet * open * (1.0 - isFern);
+    float spec = pow(max(dot(n, hv), 0.0), mid > 1.5 && mid < 2.5 ? 30.0 : 60.0) * specK;
+    land += uSunCol * spec * uSunVis * (1.0 - 0.42 * shadow) * open;
     land += uSkyHor * uAmbient * 0.08 * uWet * open * pow(1.0 - min(-d.y * 4.0, 1.0), 3.0) * (1.0 - steep);
     float fres = 0.25 + 0.75 * pow(1.0 - min(max(-d.y, 0.0), 1.0), 5.0);
     vec3 wcol = mix(gt.rgb * light * 0.8, sky * 0.92 * mix(0.05, 1.0, open), fres);
