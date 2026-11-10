@@ -11,22 +11,22 @@ import java.nio.ByteOrder;
  * overhangs. Nothing here is drawn as cubes: the grid is only data, a signed distance to the
  * ground surface every 0.5 m, which the shader blends smoothly and traces per screen pixel.
  *
- * Grid: 512 x 96 x 512 (x, y, z) over the 256 m tile and 48 m of height. Each cell is two bytes:
+ * Grid: 512 x 128 x 512 (x, y, z) over the 256 m tile and 64 m of height. Each cell is two bytes:
  * R = signed distance (metres, -4..4; negative = inside rock), G = how open the sky is there.
  */
 final class Voxels {
     private Voxels() { }
 
-    static final int NX = 512, NY = 96, NZ = 512;
+    static final int NX = 512, NY = 128, NZ = 512;
     static final float CELL = 0.5f;                 // metres
     static final float RANGE = 4f;                  // distances are clamped to +-4 m
-    static final int CACHE_VERSION = 3;
+    static final int CACHE_VERSION = 4;
 
     /** Signed distances (as uploaded), x fastest, then y, then z. */
     private static byte[] sdf;
     /** Sky openness on a coarse grid (2 m), x fastest, then y, then z. */
     private static byte[] open;
-    static final int OX = 128, OY = 24, OZ = 128;
+    static final int OX = 128, OY = 32, OZ = 128;
 
     // ------------------------------------------------------------------ tunnels
     /** A tunnel: centreline points (x, z), floor height at each point, radius. */

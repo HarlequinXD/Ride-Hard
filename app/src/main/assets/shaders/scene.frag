@@ -15,7 +15,7 @@ out vec4 fragColor;
 uniform sampler2D uGround;   // rgb = ground colour, a = 0 open water, 0.5..1 land (lit fraction: tree shadows)
 uniform sampler2D uCloud;
 uniform sampler2D uHeight;   // r = open-air ground surface (the volume below holds tunnels and caves)
-uniform highp sampler3D uVol; // terrain volume, 0.5 m: r = signed distance to the ground (-4..4 m), g = sky openness
+uniform highp sampler3D uVol; // terrain volume, 0.5 m, 64 m tall: r = signed distance to the ground (-4..4 m), g = sky openness
 uniform sampler2D uDetail;   // fine relief on the floor: grass, pebbles, shrubs, rocks, walls (0..3 m)
 uniform sampler2D uMat;      // material id per texel: 0 grass, 1 earth, 2 stone, 3 wood, 4 water, 5 plant
 uniform sampler2D uFerns;    // one optional fern per 4 m cell: offset xz, size, presence + rotation
@@ -67,7 +67,7 @@ uniform float uSunVis;
 uniform float uMist;
 
 const float CLOUD_H = 420.0;
-const float HMAX = 48.0;
+const float HMAX = 64.0;
 const float FAR = 700.0;
 const float DMAX = 3.0;
 const float DFAR = 70.0;      // detail relief fades out by here
@@ -76,9 +76,9 @@ float detailFade(float t) { return smoothstep(DFAR, DFAR * 0.4, t); }
 
 // ---- the terrain volume: smooth signed distance, traced per pixel (no cubes: the 0.5 m grid is
 //      only data, blended trilinearly)
-const vec3 VOL_SCALE = vec3(1.0 / 256.0, 1.0 / 48.0, 1.0 / 256.0);
+const vec3 VOL_SCALE = vec3(1.0 / 256.0, 1.0 / 64.0, 1.0 / 256.0);
 float volDist(vec3 p) {
-    if (p.y > 47.5) return p.y - 47.0;                          // above the volume: open air
+    if (p.y > 63.5) return p.y - 63.0;                          // above the volume: open air
     float d = textureLod(uVol, p * VOL_SCALE, 0.0).r * 8.0 - 4.0;
     return min(d, p.y - 0.3);                                    // bedrock
 }

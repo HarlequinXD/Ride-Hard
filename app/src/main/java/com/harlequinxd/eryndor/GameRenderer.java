@@ -588,7 +588,10 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         float top = WorldTextures.floorAt(x, z);
         double from = Float.isNaN(eyeY) ? top + 1.0 : eyeY - EYE_HEIGHT + 0.7;
         float f = Voxels.floorBelow(x, from, z);
-        if (Math.abs(f - top) < 0.3f) f = Math.max(f, top) + WorldTextures.detailAt(x, z);   // on the open-air ground
+        // the open-air ground's relief fades in as a tunnel floor rises to meet it (as in the shader)
+        float k = Math.max(0f, Math.min(1f, (f - top + 0.7f) / 0.4f));
+        k = k * k * (3f - 2f * k);
+        f = f + (Math.max(f, top) + WorldTextures.detailAt(x, z) - f) * k;   
         return f;
     }
 
