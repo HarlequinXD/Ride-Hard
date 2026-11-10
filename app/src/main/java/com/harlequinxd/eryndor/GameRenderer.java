@@ -144,7 +144,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         Loading.set("Raising the land around you", 0.06f);
         streamer.loadAll(px, pz, 0.06f, 0.80f);
         Loading.set("Shaping your hands", 0.825f);
-        try (InputStream rig = assets.open("woman/rig.txt"); InputStream data = assets.open("woman/woman.bin.gz")) {
+        try (InputStream rig = assets.open("woman/rig.txt"); InputStream data = assets.open("woman/woman.vox")) {
             woman.load(rig, data);
         } catch (java.io.IOException e) {
             throw new IllegalStateException("missing woman/", e);

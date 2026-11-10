@@ -13,7 +13,7 @@ move it and the weight between them (smoothly shared across the joints). The gam
 skeleton each frame and, per pixel, maps points back into this bind pose (inverse linear-blend
 skinning) to trace her.
 
-Output (woman.bin.gz): header (nx ny nz, cell, min xyz), distance (1 byte / cell, +-4 cm),
+Output (woman.vox, gzipped; not .gz, which Android's packager renames): header (nx ny nz, cell, min xyz), distance (1 byte / cell, +-4 cm),
 colour + material (4 bytes: rgb, material*50; 0 skin, 1 shirt, 2 leather, 3 hair, 4 brass, 5 cargo), skin (4 bytes: bone a, bone b, weight of a, 0).
 rig.txt: the 16 bones (name, parent, joint start and end in the bind pose).
 """
@@ -296,14 +296,14 @@ def main(out):
         D[k] = np.clip(np.round((np.clip(dist, -RANGE, RANGE) + RANGE) / (2 * RANGE) * 255), 0, 255)
         C[k, ..., :3] = np.clip(np.round(col * 255), 0, 255); C[k, ..., 3] = mat * 50
         W[k, ..., 0] = b0; W[k, ..., 1] = b1; W[k, ..., 2] = np.round(w * 255)
-    with gzip.open(os.path.join(out, 'woman.bin.gz'), 'wb', 9) as f:
+    with gzip.open(os.path.join(out, 'woman.vox'), 'wb', 9) as f:
         f.write(struct.pack('<iiiffff', nx, ny, nz, CELL, *lo))
         f.write(D.tobytes()); f.write(C.tobytes()); f.write(W.tobytes())
     with open(os.path.join(out, 'rig.txt'), 'w') as f:
         f.write('# bone parent start(x y z) end(x y z), bind pose, metres\n')
         for i, (n, p, s, e) in enumerate(BONES):
             f.write('%s %d %.4f %.4f %.4f %.4f %.4f %.4f\n' % (n, p, *s, *e))
-    print('wrote', out, os.path.getsize(os.path.join(out, 'woman.bin.gz')) // 1024, 'KB')
+    print('wrote', out, os.path.getsize(os.path.join(out, 'woman.vox')) // 1024, 'KB')
 
 
 if __name__ == '__main__':
