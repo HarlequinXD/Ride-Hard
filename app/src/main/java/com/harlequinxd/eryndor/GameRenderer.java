@@ -149,7 +149,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         sceneProg = GLUtil.program(vs, GLUtil.asset(assets, "shaders/scene.frag"));
         blitProg = GLUtil.program(vs, GLUtil.asset(assets, "shaders/blit.frag"));
         Loading.set("Uploading the land", 0.90f);
-        groundTex = GLUtil.texture(groundData, WorldTextures.GROUND_SIZE, false);
+        groundTex = GLUtil.texture(groundData, WorldTextures.GROUND_SIZE, true);    // point sampled
         heightTex = GLUtil.texture(heightData, WorldTextures.HEIGHT_SIZE, false, true);
         Loading.set("Uploading the fine relief", 0.94f);
         detailTex = GLUtil.luminance(detailData, WorldTextures.GROUND_SIZE);
@@ -160,7 +160,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         leafAtlasTex = GLUtil.atlas(LeafAtlas.build(), LeafAtlas.W, LeafAtlas.H);
         armColTex = GLUtil.atlas(armData[0], armW[0], armH[0]);
         armNrmTex = GLUtil.atlas(armData[1], armW[1], armH[1]);
-        armHgtTex = GLUtil.atlas(armData[2], armW[2], armH[2]);
+        armHgtTex = GLUtil.atlas(armData[2], armW[2], armH[2], false);   // shape: stays smooth
         armData = null;
         uploadTrees();
         Loading.set("Lighting the lanterns", 0.99f);
@@ -316,7 +316,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         if (rs != null) {
             reshadowed = null;
             GLES20.glDeleteTextures(1, new int[]{groundTex}, 0);
-            groundTex = GLUtil.texture(rs, WorldTextures.GROUND_SIZE, false);
+            groundTex = GLUtil.texture(rs, WorldTextures.GROUND_SIZE, true);
         }
         int slot = previewSlot;
         if (slot < 0) {

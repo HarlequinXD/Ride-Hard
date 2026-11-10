@@ -79,8 +79,13 @@ final class GLUtil {
         return t[0];
     }
 
-    /** Leaf sheet: RGBA, mipmapped, clamped. */
+    /** Leaf sheet: RGBA, mipmapped, clamped, point sampled. */
     static int atlas(int[] argb, int w, int h) {
+        return atlas(argb, w, h, true);
+    }
+
+    /** RGBA sheet, mipmapped, clamped; point sampled (the game's look) or smooth (shape data). */
+    static int atlas(int[] argb, int w, int h, boolean point) {
         ByteBuffer bb = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder());
         for (int c : argb) bb.put((byte) (c >> 16)).put((byte) (c >> 8)).put((byte) c).put((byte) (c >>> 24));
         bb.position(0);
@@ -90,8 +95,9 @@ final class GLUtil {
         GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
         GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, bb);
         GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D);
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR);
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER,
+                point ? GLES20.GL_NEAREST_MIPMAP_NEAREST : GLES20.GL_LINEAR_MIPMAP_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, point ? GLES20.GL_NEAREST : GLES20.GL_LINEAR);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
         return t[0];
@@ -162,7 +168,7 @@ final class GLUtil {
         }
         GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER,
-                nearestMag ? GLES20.GL_NEAREST_MIPMAP_LINEAR : GLES20.GL_LINEAR_MIPMAP_LINEAR);
+                nearestMag ? GLES20.GL_NEAREST_MIPMAP_NEAREST : GLES20.GL_LINEAR_MIPMAP_LINEAR);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER,
                 nearestMag ? GLES20.GL_NEAREST : GLES20.GL_LINEAR);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_REPEAT);

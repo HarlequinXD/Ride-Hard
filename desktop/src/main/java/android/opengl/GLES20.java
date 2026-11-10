@@ -34,6 +34,7 @@ public class GLES20 {
     public static final int GL_LUMINANCE = GL11.GL_LUMINANCE;
     public static final int GL_NEAREST = GL11.GL_NEAREST;
     public static final int GL_NEAREST_MIPMAP_LINEAR = GL11.GL_NEAREST_MIPMAP_LINEAR;
+    public static final int GL_NEAREST_MIPMAP_NEAREST = GL11.GL_NEAREST_MIPMAP_NEAREST;
     public static final int GL_REPEAT = GL11.GL_REPEAT;
     public static final int GL_RGBA = GL11.GL_RGBA;
     public static final int GL_TEXTURE0 = GL13.GL_TEXTURE0;

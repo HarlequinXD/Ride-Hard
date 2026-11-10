@@ -395,7 +395,8 @@ void shadeTree(int sp, int pid, vec2 leafUv, vec3 hl, vec3 rdl, float yaw, out v
         vec3 b2 = cross(axis, b1);
         float ang = atan(dot(nl, b2), dot(nl, b1));
         float v = mix(C.z, C.w, h);
-        float bt = barkTex(m2.z, ang, v);
+        // bark texels: 32 around the trunk, 6 cm along it
+        float bt = barkTex(m2.z, (floor(ang * 5.093) + 0.5) / 5.093, (floor(v * 16.0) + 0.5) / 16.0);
         alb = mk.rgb * bt;
         if (C.y > 1.5) alb = mix(alb, mk.rgb * 0.8, 0.5);         // young twigs are smoother
         leaf = 0.0;
@@ -625,7 +626,9 @@ void main() {
     // per-pixel material texture and bump
     float mid = floor(texture(uMat, wp / 256.0).r * 255.0 / 40.0 + 0.5);
     vec2 bump;
-    vec3 micro = microAlbedo(wp, mid, bump);
+    // point-sampled look: the fine surface detail is snapped to 3 cm texels like a texture would be
+    vec2 wpT = (floor(wp * 32.0) + 0.5) / 32.0;
+    vec3 micro = microAlbedo(wpT, mid, bump);
     float mf = smoothstep(30.0, 5.0, T) * (1.0 - useTop * 0.5);
     micro = mix(vec3(1.0), micro, mf);
     // per-pixel normal map: finite differences sized to this pixel's footprint on the ground
@@ -669,8 +672,9 @@ void main() {
     light += lantern;
 
     vec3 albedo = isFern > 0.5 ? fcol * (0.85 + 0.3 * hash(floor(wp * 60.0))) : gt.rgb * micro;
-    vec3 rock = vec3(0.47, 0.45, 0.42) * rockTex(hp);
-    rock = mix(rock, vec3(0.30, 0.36, 0.20) * rockTex(hp * 1.7), smoothstep(0.55, 0.85, n.y) * 0.5 * (1.0 - kind));
+    vec3 hpT = (floor(hp * 24.0) + 0.5) / 24.0;                       // rock texels, 4 cm
+    vec3 rock = vec3(0.47, 0.45, 0.42) * rockTex(hpT);
+    rock = mix(rock, vec3(0.30, 0.36, 0.20) * rockTex(hpT * 1.7), smoothstep(0.55, 0.85, n.y) * 0.5 * (1.0 - kind));
     albedo = mix(albedo, rock, steep);
 
     vec3 land = albedo * light * mix(1.0, 0.62, uWet * open);
