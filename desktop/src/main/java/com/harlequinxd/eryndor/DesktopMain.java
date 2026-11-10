@@ -178,7 +178,16 @@ public final class DesktopMain {
             pollKeys();
 
             renderer.onDrawFrame(null);
-            if (sky.worldReady && readyAt == 0) readyAt = System.currentTimeMillis();
+            if (sky.worldReady && readyAt == 0) {
+                readyAt = System.currentTimeMillis();
+                // ERYNDOR_TURN=dx,dy turns the view once the world is ready (for testing), in degrees
+                String turn = System.getenv("ERYNDOR_TURN");
+                if (turn != null) {
+                    String[] p = turn.split(",");
+                    input.addLook((float) Math.toRadians(Float.parseFloat(p[0])) / LOOK_SENS,
+                            (float) Math.toRadians(Float.parseFloat(p[1])) / LOOK_SENS);
+                }
+            }
             overlay.draw(fbW, fbH, state());
             if (shotDir != null && System.currentTimeMillis() >= nextShot) {
                 screenshot(new File(shotDir, String.format("shot_%03d.png", shotIndex++)));

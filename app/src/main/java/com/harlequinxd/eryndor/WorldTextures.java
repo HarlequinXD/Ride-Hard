@@ -72,6 +72,12 @@ final class WorldTextures {
         return fernCache;
     }
     private static float[] DH;                       // detail heights while painting
+    /**
+     * Small flora painted and raised on the map (tall grass clumps, shrubs, reeds, mushroom rings,
+     * ferns). Off: the ground's look comes from texture sets instead. Placement still draws the same
+     * random numbers either way, so rocks, logs and trees stay exactly where they were.
+     */
+    static final boolean FLORA = false;
 
     /** Raise the detail height at a texel (keeps the highest). */
     private static void raise(int i, float v) {
@@ -489,7 +495,7 @@ final class WorldTextures {
                 // detail height (m): grass is a fine fuzz of blades
                 // lumpy meadow: gentle hummocks plus a dense fuzz of grass blades
                 float hummock = smooth(0.35f, 0.9f, m2.at(u + 0.21f, v + 0.67f)) * 0.22f + (f1.at(u + 0.3f, v) - 0.5f) * 0.06f;
-                float dh = 0.03f + hummock + 0.11f * h * h + 0.05f * bl0(blade, u, v);
+                float dh = 0.03f + hummock + (FLORA ? 0.11f * h * h + 0.05f * bl0(blade, u, v) : 0f);
 
                 // ---- meadow: lush to sun-dried grass, strong per-texel blade variation
                 float t = smooth(0.30f, 0.75f, big);
@@ -505,7 +511,7 @@ final class WorldTextures {
                 if (clover > 0) {
                     float cl = 0.85f + 0.3f * fine;
                     r = lerp(r, 0.25f * cl, clover); g = lerp(g, 0.40f * cl, clover); b = lerp(b, 0.16f * cl, clover);
-                    if (h2 > 0.993f && clover > 0.3f) { r = 0.88f; g = 0.88f; b = 0.84f; }
+                    if (FLORA && h2 > 0.993f && clover > 0.3f) { r = 0.88f; g = 0.88f; b = 0.84f; }
                 }
                 // bare earth patches
                 float bare = smooth(0.70f, 0.78f, m1.at(u + 0.13f, v + 0.51f) * 0.7f + m2.at(u, v) * 0.3f);
@@ -519,7 +525,7 @@ final class WorldTextures {
                 }
                 // wildflowers in drifts
                 float fl = smooth(0.55f, 0.85f, m2.at(u + 0.7f, v + 0.3f)) * (1f - bare);
-                if (h2 < 0.028f * fl) {
+                if (FLORA && h2 < 0.028f * fl) {
                     float k = hash(x * 3, y * 5);
                     if (k < 0.35f) { r = 0.95f; g = 0.93f; b = 0.86f; }       // daisies
                     else if (k < 0.65f) { r = 0.95f; g = 0.80f; b = 0.20f; }  // buttercups
@@ -546,7 +552,8 @@ final class WorldTextures {
                 if (onN || onE || onP) {
                     float wear = smooth(0.6f, 0.0f, Math.min(Math.abs(sd - 1.6f), Math.abs(sd + 0f - 1.6f))) * (onN ? 1f : 0f);
                     float[] c = cobble(wx, wz, 0.36f, fine, h, wear * 0.6f);
-                    dh = vEdge < 0.36f * 0.13f ? 0.0f : 0.02f + 0.035f * smooth(0f, 0.12f, vEdge);
+                    // the stones' own relief comes from the cobblestone texture's height map
+                    dh = 0.02f;
                     boolean curb = (onN && !onP && !(sdz < halfE + 0.35f) && sd > halfN)
                             || (onE && !onP && !(sd < halfN + 0.35f) && sdz > halfE)
                             || (onP && plaza > 15.0f && !(sd < halfN + 0.35f) && !(sdz < halfE + 0.35f));
@@ -593,7 +600,7 @@ final class WorldTextures {
                     float bl2 = 0.74f + 0.22f * hash(fx * 31 + fz, 7) + 0.06f * (h - 0.5f) + 0.08f * (fine - 0.5f);
                     r = 0.58f * bl2; g = 0.55f * bl2; b = 0.50f * bl2;
                     if (fu < 0.10f || fv < 0.12f) { r *= 0.55f; g *= 0.55f; b *= 0.55f; }
-                    dh = (fu < 0.10f || fv < 0.12f) ? 0.0f : 0.025f;
+                    dh = 0.02f;                                            // relief from the cobblestone texture
                     if (sd > 3.5f) {                                       // parapet walls
                         dh = 0.95f + 0.05f * hash(fz, 3);
                         float pl = 0.95f - 0.35f * (dx > 0 ? 1f : 0f) * smooth(3.5f, 4.2f, sd) + 0.1f * (h - 0.5f);
@@ -612,7 +619,7 @@ final class WorldTextures {
                     dh = lerp(dh, hash(x >> 1, y >> 1) < 0.12f ? 0.05f : 0.01f, bank);
                     if (bank > 0.5f) mat = M_EARTH;
                     // reeds along the outer bank
-                    if (rd > rhw + 0.3f && rd < rhw + 1.3f && m2.at(u * 4f, v * 4f) > 0.55f && h > 0.45f) {
+                    if (FLORA && rd > rhw + 0.3f && rd < rhw + 1.3f && m2.at(u * 4f, v * 4f) > 0.55f && h > 0.45f) {
                         float rl = 0.7f + 0.5f * h2;
                         r = 0.30f * rl; g = 0.40f * rl; b = 0.18f * rl;
                         dh = 0.35f + 0.45f * h2;
@@ -683,12 +690,13 @@ final class WorldTextures {
         }
 
         // ---- scatter
-        Loading.set("Growing grass and shrubs", 0.62f);
+        Loading.set("Shaping the meadows", 0.62f);
         curMat = M_PLANT;
         for (int k = 0; k < 9000; k++) {                         // tall grass clumps
             int cx = rnd.nextInt(S), cy = rnd.nextInt(S);
             if (busy[cy * S + cx] != 0) continue;
-            tuft(R, G, B, cx, cy, rnd);
+            if (FLORA) tuft(R, G, B, cx, cy, rnd);
+            else skipTuft(rnd);
         }
         Loading.set("Scattering boulders", 0.66f);
         curMat = M_STONE;
@@ -697,12 +705,14 @@ final class WorldTextures {
             if (busy[cy * S + cx] != 0) continue;
             rock(R, G, B, cx, cy, 1.3f + rnd.nextFloat() * rnd.nextFloat() * 7f, rnd, f1);
         }
-        Loading.set("Growing grass and shrubs", 0.69f);
+        Loading.set("Shaping the meadows", 0.69f);
         curMat = M_PLANT;
         for (int k = 0; k < 2100; k++) {                         // shrubs, gorse and bramble
             int cx = rnd.nextInt(S), cy = rnd.nextInt(S);
             if (busy[cy * S + cx] != 0) continue;
-            bush(R, G, B, cx, cy, 3.5f + rnd.nextFloat() * 7f, rnd.nextFloat(), rnd.nextInt(1 << 20), f2);
+            float rad = 3.5f + rnd.nextFloat() * 7f, kind = rnd.nextFloat();
+            int seed = rnd.nextInt(1 << 20);
+            if (FLORA) bush(R, G, B, cx, cy, rad, kind, seed, f2);
         }
         // standing stones on the rise west of the north road
         curMat = M_STONE;
@@ -736,9 +746,15 @@ final class WorldTextures {
             molehill(R, G, B, cx, cy, 2f + rnd.nextFloat() * 2f, rnd);
         }
         curMat = M_PLANT;
-        fairyRing(R, G, B, 196f, 70f, 2.4f, rnd);
-        fairyRing(R, G, B, 40f, 110f, 1.8f, rnd);
-        fairyRing(R, G, B, 210f, 222f, 2.9f, rnd);
+        if (FLORA) {
+            fairyRing(R, G, B, 196f, 70f, 2.4f, rnd);
+            fairyRing(R, G, B, 40f, 110f, 1.8f, rnd);
+            fairyRing(R, G, B, 210f, 222f, 2.9f, rnd);
+        } else {
+            skipFairyRing(2.4f, rnd);
+            skipFairyRing(1.8f, rnd);
+            skipFairyRing(2.9f, rnd);
+        }
         curMat = M_STONE;
         well(R, G, B, (int) (141 * PPM), (int) (113 * PPM), 1.25f * PPM, 0.80f * PPM, f1);
         Loading.set("Planting ferns", 0.79f);
@@ -755,7 +771,7 @@ final class WorldTextures {
                     for (int j = -6; j <= 6 && clear; j += 3)
                         if (busy[Math.floorMod(pz + k, S) * S + Math.floorMod(px + j, S)] != 0
                                 || DH[Math.floorMod(pz + k, S) * S + Math.floorMod(px + j, S)] > 0.5f) clear = false;
-                boolean present = clear && rnd.nextFloat() < 0.55f;
+                boolean present = clear && rnd.nextFloat() < 0.55f && FLORA;
                 int o = (cz * FERN_GRID + cx) * 4;
                 fernCache[o] = (byte) Math.round(ox * 255);
                 fernCache[o + 1] = (byte) Math.round(oz * 255);
@@ -834,6 +850,28 @@ final class WorldTextures {
         else if (Math.abs(across) < 0.5f) cov = h > 0.35f ? 0.15f : 0.8f;     // grass crown
         else cov = smooth(1.6f, 0.9f, Math.abs(across)) * (h > 0.3f ? 1f : 0.4f);
         return new float[]{r, g, b, cov, th};
+    }
+
+    /** Draw the same random numbers as tuft() without painting anything. */
+    private static void skipTuft(Random rnd) {
+        int blades = 5 + rnd.nextInt(8);
+        rnd.nextFloat();
+        for (int k = 0; k < blades; k++) {
+            rnd.nextDouble();
+            rnd.nextInt(3);
+            rnd.nextFloat();
+        }
+    }
+
+    /** Draw the same random numbers as fairyRing() without painting anything. */
+    private static void skipFairyRing(float radius, Random rnd) {
+        int n = (int) (radius * 14);
+        for (int k = 0; k < n; k++) {
+            rnd.nextFloat();
+            rnd.nextFloat();
+            rnd.nextFloat();
+            rnd.nextFloat();
+        }
     }
 
     private static void tuft(float[] R, float[] G, float[] B, int cx, int cy, Random rnd) {

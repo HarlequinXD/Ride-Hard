@@ -180,6 +180,10 @@ const float GFAR = 12.0;
 //      dithered noise so the tile doesn't repeat visibly. Cobblestones: one placement, so the rows
 //      of stones stay straight.
 const float GRASS_TILE = 1.25, GRASS_TILE2 = 1.7, COBBLE_TILE = 1.6;
+const float LINES = 240.0;              // screen lines rendered (PS1 resolution)
+const float SURF_FAR = 14.0;            // texture height is traced this far
+const float GRASS_DEPTH = 0.035;        // height map white = this many metres of relief
+const float COBBLE_DEPTH = 0.06;
 
 vec2 surfUV(int layer, vec2 xz, out float turned) {
     turned = 0.0;
@@ -189,8 +193,21 @@ vec2 surfUV(int layer, vec2 xz, out float turned) {
     return turned > 0.5 ? vec2(-xz.y, xz.x) / GRASS_TILE2 + vec2(0.37, 0.61) : xz / GRASS_TILE;
 }
 
-float surfLod(float t, float tile) {   // texture level for a pixel 160 lines tall at distance t
-    return log2(max(1.0, t * 2.0 * uTanHalf.y / 160.0 / (tile / 512.0)));
+float surfLod(float t, float tile) {   // texture level for one screen pixel at distance t
+    return log2(max(1.0, t * 2.0 * uTanHalf.y / LINES / (tile / 512.0)));
+}
+
+// per-pixel relief from the texture set's height map (cobbles bulge out of the mortar, grass clumps
+// rise), only where the terrain mask picked a textured surface
+float surfHeight(vec2 xz, float t) {
+    float mid = floor(texture(uMat, xz / 256.0).r * 255.0 / 40.0 + 0.5);
+    int layer = mid < 0.5 ? 0 : (mid > 1.5 && mid < 2.5 ? 1 : -1);
+    if (layer < 0) return 0.0;
+    float turned;
+    vec2 uv = surfUV(layer, xz, turned);
+    float tile = layer == 1 ? COBBLE_TILE : GRASS_TILE;
+    float h = textureLod(uSurfNH, vec3(uv, float(layer)), surfLod(t, tile)).b;
+    return h * (layer == 1 ? COBBLE_DEPTH : GRASS_DEPTH) * smoothstep(SURF_FAR, SURF_FAR * 0.5, t);
 }
 
 
@@ -532,7 +549,7 @@ void shadeArm(int i, int part, vec3 q, float th, float t, out vec3 alb, out vec3
     bool back = q.y >= 0.5 * (h.x - h.y);
     vec2 uv = vec2((q.x + 0.5) / 544.0, (q.z + 88.0 + row + (back ? 0.0 : 352.0)) / 704.0);
     // texel footprint of one screen pixel (160 lines) at this distance
-    float lod = log2(max(1.0, t * 2.0 * uTanHalf.y / 160.0 / ARM_S));
+    float lod = log2(max(1.0, t * 2.0 * uTanHalf.y / LINES / ARM_S));
     alb = textureLod(uArmCol, uv, lod).rgb;
     vec3 n = textureLod(uArmNrm, uv, max(lod - 0.5, 0.0)).rgb * 2.0 - 1.0;
     if (part > 0) {             // turn the normal with the finger's bend
@@ -650,6 +667,7 @@ void main() {
         vec4 hm = texture(uHeight, p.xz / 256.0) * HMAX;
         float det = 0.0;
         if (t < DFAR) det = texture(uDetail, p.xz / 256.0).r * DMAX * detailFade(t);
+        if (t < SURF_FAR) det += surfHeight(p.xz, t);
         float near = 0.0;
         vec3 fc;
         if (t < FERN_FAR && fernAt(p, fc, near)) { hitT = t; isFern = 1.0; fcol = fc; break; }
@@ -658,6 +676,7 @@ void main() {
         if (t > FAR) break;
         prevT = t;
         float st = 0.035 + t * 0.026;
+        if (t < 4.0) st = min(st, 0.012 + t * 0.012);       // fine steps near: small texture relief
         if (near > 0.5) st = min(st, 0.015 + t * 0.004);   // thin fronds need fine steps
         t += st;
     }
@@ -676,6 +695,7 @@ void main() {
             } else {
                 vec4 hm = texture(uHeight, p.xz / 256.0) * HMAX;
                 float det = texture(uDetail, p.xz / 256.0).r * DMAX * detailFade(m);
+                if (m < SURF_FAR) det += surfHeight(p.xz, m);
                 solid = p.y < hm.r + det || (p.y > hm.g && p.y < hm.b);
             }
             if (solid) b = m; else a = m;

@@ -56,7 +56,10 @@ Hollowspire.
   so stones don't ghost) and packs normal + height. Grass shows the photo's own colour, lit by its normal
   map, point sampled, with tree shadows on top; two placements, one turned and larger, are mixed
   per pixel by a dithered noise so the tile doesn't repeat visibly. Small detail comes only from
-  the textures (no grass bumps in the terrain).
+  the textures: each set's height map is traced per pixel (cobbles bulge 6 cm out of the mortar,
+  grass clumps 3.5 cm), and the map itself no longer paints or raises small flora (flowers,
+  shrubs, tall grass clumps, reeds, mushroom rings, ferns) or paving joints; rocks, logs,
+  stumps, cairns, curbs and walls remain (`WorldTextures.FLORA` turns the flora back on).
 - **Sword, per pixel**: a longsword in the right hand: a diamond-section steel blade with a
   fuller and honed edges that mirror the sky, a blackened-iron crossguard with brass bands, a
   spiral leather grip and a pommel. Each pixel traces its distance-field shapes. The right hand's
@@ -88,7 +91,7 @@ Hollowspire.
 - **Day/night**: full 24 h in 8 minutes (x20 with the Time button).
 - **Weather**: clear, cloudy, overcast, rain (wet ground), thunderstorm (lightning) and mist.
   Changes on its own; the Weather button cycles it.
-- **Look**: GBA resolution (160 lines, width follows the screen so it fills the whole display),
+- **Look**: PS1 resolution (160 lines, width follows the screen so it fills the whole display),
   nearest-neighbour upscale, 15-bit ordered dither.
 - **Controls**: touch pad on the left 45% of the screen to walk, swipe anywhere else to look.
 
