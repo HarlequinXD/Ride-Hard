@@ -143,11 +143,7 @@ public final class DesktopMain {
         glfwSetFramebufferSizeCallback(window, (w, width, height) -> resized = true);
         glfwSetKeyCallback(window, (w, key, sc, action, mods) -> onKey(key, action, mods));
         glfwSetMouseButtonCallback(window, (w, button, action, mods) -> {
-            if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                if (action == GLFW_PRESS && !mouseCaptured) captureMouse(true);
-                else if (mouseCaptured) mouseSwing = action != GLFW_RELEASE;   // swing the pickaxe
-                if (action == GLFW_RELEASE) mouseSwing = false;
-            }
+            if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS && !mouseCaptured) captureMouse(true);
         });
         glfwSetCursorPosCallback(window, (w, x, y) -> onMouse(x, y));
         glfwSetWindowFocusCallback(window, (w, focused) -> {
@@ -202,7 +198,6 @@ public final class DesktopMain {
                     input.addLook(ty / LOOK_SENS, -(tp + 0.04f) / LOOK_SENS);
                     turn = null;
                 }
-                digTest = System.getenv("ERYNDOR_DIG") != null;     // testing: keep swinging the pickaxe
                 if (turn != null) {
                     String[] p = turn.split(",");
                     input.addLook((float) Math.toRadians(Float.parseFloat(p[0])) / LOOK_SENS,
@@ -234,7 +229,6 @@ public final class DesktopMain {
         s.pad = lastPadUse > lastMouseUse;
         s.clickToLook = !mouseCaptured && !s.pad && sky.worldReady;
         s.invertY = invertY;
-        s.sword = renderer.swordDrawn();
         return s;
     }
 
@@ -267,9 +261,6 @@ public final class DesktopMain {
                 break;
             case GLFW_KEY_I:
                 invertY = !invertY;
-                break;
-            case GLFW_KEY_F:
-                renderer.toggleSword();
                 break;
             default:
                 break;
@@ -323,7 +314,6 @@ public final class DesktopMain {
             y /= l;
         }
         input.moveX = x;
-        input.swingHeld = mouseSwing || padSwing || digTest;
         input.moveY = y;
     }
 
@@ -354,12 +344,9 @@ public final class DesktopMain {
 
     // ------------------------------------------------------------------ Xbox controller
     private float padMoveX, padMoveY;
-    private volatile boolean mouseSwing;
-    private boolean padSwing, digTest;
 
     private void pollGamepad(float dt) {
         padMoveX = padMoveY = 0;
-        padSwing = false;
         int jid = -1;
         for (int j = GLFW_JOYSTICK_1; j <= GLFW_JOYSTICK_LAST; j++) {
             if (glfwJoystickPresent(j) && glfwJoystickIsGamepad(j)) {
@@ -373,7 +360,6 @@ public final class DesktopMain {
         float[] l = stick(pad.axes(GLFW_GAMEPAD_AXIS_LEFT_X), pad.axes(GLFW_GAMEPAD_AXIS_LEFT_Y), 1.0f);
         float[] r = stick(pad.axes(GLFW_GAMEPAD_AXIS_RIGHT_X), pad.axes(GLFW_GAMEPAD_AXIS_RIGHT_Y), 1.7f);
         padMoveX = l[0];
-        padSwing = pad.axes(GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0.2f;   // RT swings the pickaxe
         padMoveY = -l[1];
         if (r[0] != 0 || r[1] != 0) {
             float turn = STICK_TURN * dt / LOOK_SENS;
@@ -386,7 +372,6 @@ public final class DesktopMain {
         if (pressed(GLFW_GAMEPAD_BUTTON_X)) sky.fastTime = !sky.fastTime;
         if (pressed(GLFW_GAMEPAD_BUTTON_BACK) || pressed(GLFW_GAMEPAD_BUTTON_START)) helpShown = !helpShown;
         if (pressed(GLFW_GAMEPAD_BUTTON_RIGHT_THUMB)) invertY = !invertY;
-        if (pressed(GLFW_GAMEPAD_BUTTON_B)) renderer.toggleSword();
         for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; b++) {
             boolean d = pad.buttons(b) == GLFW_PRESS;
             if (d) active = true;

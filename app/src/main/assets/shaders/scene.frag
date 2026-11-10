@@ -8,6 +8,13 @@
 precision highp float;
 precision highp int;
 precision highp sampler2D;
+// MOBILE (defined by the game on phones): fewer steps, shorter reach, no traced bounce light, so it
+// runs fast on a phone GPU; the look stays the same up close
+#ifdef MOBILE
+const int MARCH_STEPS = 150, TREE_CELLS = 14, CHAR_STEPS = 64, POM_STEPS = 6;
+#else
+const int MARCH_STEPS = 260, TREE_CELLS = 26, CHAR_STEPS = 110, POM_STEPS = 12;
+#endif
 
 in vec2 vUv;
 out vec4 fragColor;
@@ -27,22 +34,20 @@ uniform sampler2D uLeafAtlas; // 8 leaf shapes, rgb detail + alpha outline
 uniform vec4 uTreeMeta[60];   // 6 per species: min+gx, max+gy, cellBase gz bark halfWidth, leafA+trunkR, leafB, bark+height
 uniform vec4 uPreview;        // Tree Builder: xyz base position, w = species slot (-1 = off)
 uniform float uPreviewYaw;
-uniform highp sampler3D uHandA;  // voxel hand (tools/build_hands.py): palm+arm, thumb, index, middle distances
-uniform highp sampler3D uHandB;  //   ring, little finger distances
-uniform highp sampler3D uHandC;  //   colour, material
-uniform vec3 uHandO;             //   grid origin (arm units, half a cell before the first centre)
-uniform vec3 uHandS;             //   grid size (arm units)
-uniform mat3 uArmRot[2];      // arm-local -> camera space (0 right arm, 1 left arm)
-uniform vec3 uArmPos[2];      // arm-local origin (the shoulder end) in camera space, metres
-uniform vec4 uFing[10];       // per finger (right arm then left, thumb first): knuckle u, z, direction u, z
-uniform float uFingK[10];     // per finger curl: curvature (radians per grid unit)
-uniform float uArmShow;
-uniform vec3 uSwordO;         // the pickaxe in right-arm grid space: grip centre,
-uniform vec3 uSwordB;         //   haft direction (out of the thumb side),
-uniform vec3 uSwordE;         //   head direction
-uniform vec4 uClods[48];      // dirt clods knocked loose by the pickaxe: xyz, radius
-uniform int uClodN;
-uniform float uSwordShow;
+// the player, a woman explorer: ONE voxel model in her bind pose (tools/build_woman.py), rigged to
+// a 16-bone skeleton; the shader maps points back into the bind pose (inverse skinning)
+uniform float uCharShow;
+uniform highp sampler3D uWomanD;     // signed distance, +-4 cm
+uniform highp sampler3D uWomanC;     // colour, material (0 skin, 1 shirt, 2 leather, 3 hair, 4 brass, 5 cargo)
+uniform highp sampler3D uWomanB;     // skinning: bone a, bone b, weight of a
+uniform vec3 uWomanMin;              // bind-pose box (metres)
+uniform vec3 uWomanSize;
+uniform vec3 uWomanDims;             // cells
+uniform vec4 uSkin[48];              // per bone, 3 rows: bind pose -> world (shader frame)
+uniform vec4 uBoneA[16];             // posed bones (shader frame): start
+uniform vec4 uBoneB[16];             //   and end
+uniform vec4 uCharSphere;            // bounding sphere of the posed figure
+uniform float uCamNear;              // trees nearer than this are cut away (they'd hide her)
 uniform highp sampler2DArray uSurfCol;  // ground texture sets, one layer each: 0 grass, 1 cobblestone
 uniform highp sampler2DArray uSurfNH;   // their normal maps (r, g) and height maps (b)
 
@@ -72,11 +77,19 @@ uniform float uMist;
 
 const float CLOUD_H = 420.0;
 const float HMAX = 64.0;
+#ifdef MOBILE
+const float FAR = 150.0;
+#else
 const float FAR = 224.0;      // the ground window reaches 224 m or more each way
+#endif
 const float WIN = 512.0;      // metres of ground, heights, materials and trees held around you (wraps)
 const float VOL_NEAR = 88.0;  // the volume window holds at least 96 m each way; beyond, plain heights
 const float DMAX = 3.0;
+#ifdef MOBILE
+const float DFAR = 32.0;
+#else
 const float DFAR = 70.0;      // detail relief fades out by here
+#endif
 
 float detailFade(float t) { return smoothstep(DFAR, DFAR * 0.4, t); }
 
@@ -138,6 +151,49 @@ float coverage(float n) {
 // Sky for an upward direction d (d.y >= 0). Also used, mirrored, for water reflections.
 float gOpenSky = 1.0;    // set by skyColor: how much open sky (not cloud, peak or tower) that direction shows
 
+// ---- an alien world: colours turned round the hue circle (rotation about the grey axis), so
+// meadows grow violet and magenta, earth goes slate teal, rock keeps its greys with a cold cast
+vec3 hueTurn(vec3 c, float a) {
+    const vec3 k = vec3(0.57735);
+    return c * cos(a) + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - cos(a));
+}
+vec3 alienGround(vec3 c) {
+    vec3 r = max(hueTurn(c, 3.25), 0.0);
+    float l = dot(c, vec3(0.3, 0.59, 0.11));
+    return mix(vec3(l), r, 1.45) * vec3(1.02, 0.92, 1.10);
+}
+vec3 alienLeaf(vec3 c, float sp) {
+    // each species its own strange colour: cyan, magenta, acid gold, coral, deep violet
+    float a = 1.6 + mod(sp * 1.37, 6.2832) * 0.55;
+    vec3 r = max(hueTurn(c, a), 0.0);
+    float l = dot(c, vec3(0.3, 0.59, 0.11));
+    return clamp(mix(vec3(l), r, 1.9) * 1.45, 0.0, 1.0);
+}
+
+// one moon in the sky: direction m, angular radius r, surface colour; lit by the sun, cratered
+vec3 moonDisc(vec3 d, vec3 sky, vec3 m, float r, vec3 surf, float seed, out float cover) {
+    float c = dot(d, m);
+    cover = 0.0;
+    float cr = cos(r);
+    sky += surf * pow(max(c, 0.0), 1800.0 * (0.03 / r)) * 0.25 * (0.3 + uStars);     // a faint halo
+    if (c < cr - 0.0004) return sky;
+    vec3 u = normalize(cross(m, vec3(0.0, 1.0, 0.0)));
+    vec3 v = cross(u, m);
+    vec2 q = vec2(dot(d, u), dot(d, v)) / sin(r);
+    float rr = dot(q, q);
+    cover = smoothstep(1.0, 0.92, rr);
+    float z = sqrt(max(0.0, 1.0 - rr));
+    vec3 n = normalize(u * q.x + v * q.y - m * z);
+    float lit = max(dot(n, uSunDir), 0.0);
+    float crater = 0.80 + 0.20 * vnoise(q * 7.0 + seed) + 0.10 * vnoise(q * 23.0 + seed * 3.0);
+    float band = 0.92 + 0.08 * sin(q.y * 9.0 + vnoise(q * 3.0 + seed) * 4.0);
+    vec3 face = surf * crater * band * (0.15 + lit * 1.15);
+    // the unlit side: by day the sky shows faintly through it, by night it is nearly black
+    vec3 dark = mix(sky * 0.80 + surf * 0.05, surf * crater * 0.05, uStars);
+    face = mix(dark, face, smoothstep(0.0, 0.25, lit));
+    return mix(sky, face, cover);
+}
+
 vec3 skyColor(vec3 d) {
     float h = d.y;
     vec3 sky = mix(uSkyHor, uSkyTop, pow(h, 0.55));
@@ -145,13 +201,15 @@ vec3 skyColor(vec3 d) {
     sky += uSunCol * (pow(max(sd, 0.0), 10.0) * 0.30 + pow(max(sd, 0.0), 180.0) * 0.55) * uSunVis;
     sky = mix(sky, vec3(1.0, 0.97, 0.88) * 1.4, smoothstep(0.99905, 0.99935, sd) * uSunVis);
 
-    // moon and stars
-    vec3 md = normalize(-uSunDir + vec3(0.0, 0.12, 0.0));
-    float mdot = dot(d, md);
-    float moon = smoothstep(0.99935, 0.99955, mdot);
-    float crater = 0.85 + 0.15 * vnoise(d.xz * 900.0);
-    sky += vec3(0.75, 0.80, 0.92) * pow(max(mdot, 0.0), 60.0) * 0.12 * uStars;
-    sky = mix(sky, vec3(0.88, 0.90, 0.96) * crater, moon * uStars);
+    // two moons: a great banded one, pale violet, and a small rust-red one that moves faster;
+    // both lit by the sun (they show phases) and visible by day too
+    float a1 = 0.9 + uTime * 6.2831853 / 3600.0, a2 = -1.2 - uTime * 6.2831853 * 3.0 / 3600.0;
+    vec3 m1 = normalize(vec3(sin(a1) * 0.80, 0.50, -cos(a1) * 0.80));
+    vec3 m2 = normalize(vec3(sin(a2) * 0.62, 0.78, -cos(a2) * 0.62));
+    float c1, c2;
+    sky = moonDisc(d, sky, m1, 0.115, vec3(0.80, 0.74, 0.92), 3.0, c1);
+    sky = moonDisc(d, sky, m2, 0.032, vec3(0.86, 0.48, 0.32), 11.0, c2);
+    float moon = max(c1, c2);
     vec2 sg = floor(d.xz / (d.y + 0.25) * 140.0);
     float star = step(0.9935, hash(sg)) * smoothstep(0.02, 0.25, d.y) * (1.0 - moon);
     sky += vec3(star * uStars * (0.55 + 0.45 * hash(sg + 7.0)));
@@ -298,7 +356,11 @@ const float SURF_TILE[15] = float[15](1.25, 1.6, 1.5, 2.5, 1.6, 1.0, 2.0, 2.5,
 const float SURF_DEPTH[15] = float[15](0.035, 0.06, 0.02, 0.05, 0.03, 0.03, 0.015, 0.02,
                                        0.03, 0.025, 0.06, 0.03, 0.035, 0.08, 0.05);  // relief (m)
 const float LINES = 240.0;              // screen lines rendered (PS1 resolution)
+#ifdef MOBILE
+const float SURF_FAR = 6.0;
+#else
 const float SURF_FAR = 14.0;            // texture height is traced this far
+#endif
 const float MAT_STEP = 16.0;            // material ids are stored as id * 16 in uMat
 
 // material id (terrain mask) -> texture layer, or -1 for the made-up surfaces (wood, water)
@@ -460,7 +522,11 @@ float microHeight(vec2 wp, float mid) {
 // ---- spline trees from the Tree Builder: tapered branch segments and textured leaves, traced
 //      per pixel through each species' 3D zone grid (no meshes)
 const float TC = 16.0;          // world tree cell size; every tree fits inside its own cell
+#ifdef MOBILE
+const float TREE_FAR = 130.0;
+#else
 const float TREE_FAR = 222.0;
+#endif
 const float PIX = 0.0085;       // radians per low-res pixel (for leaf texture detail level)
 
 vec4 tfetch(sampler2D s, int i) { return texelFetch(s, ivec2(i % 1024, i / 1024), 0); }
@@ -612,7 +678,11 @@ void shadeTree(int sp, int pid, vec2 leafUv, vec3 hl, vec3 rdl, float yaw, out v
 // off that spot (its colour, lit by the sun and the sky there). Gives colour bleeding, ambient
 // occlusion in hollows and caves, and cave mouths lighting the cave inside.
 // Returns the ambient light for pbr() (linear), already including openness.
+#ifdef MOBILE
+const float GI_FAR = 0.0;                 // phones: plain sky light, no traced bounce
+#else
 const float GI_FAR = 45.0;
+#endif
 vec3 giAmbient(vec3 p, vec3 n, float t) {
     vec3 skyL = toLin(uAmbient) * SKY_E;
     vec3 sunL = toLin(uSunCol) * SUN_E * uSunVis;
@@ -650,189 +720,64 @@ vec3 giAmbient(vec3 p, vec3 n, float t) {
     return sum / 3.0;
 }
 // ---------------------------------------------------------------------------------------------
-// First-person arms, per pixel: smooth distance-field shapes in each arm's grid space (x along the
-// arm toward the fingertips, y out of the back of the hand, z across it; 1.25 mm units). A leather
-// bracer with straps over the forearm, a linen wrap at the wrist, then a bare hand: a padded palm,
-// knuckles, and five fingers that each curl on their own (a sample point is unbent around the
-// finger's knuckle axis and tested against the straight finger). No image, so no ragged edges.
-const float ARM_S = 0.00125;      // metres per grid unit
-const float ARM_X0 = 150.0;       // nearest part of the arm drawn (the rest is behind the camera)
-
+// The player: one whole voxel model rigged to a skeleton. A world point is carried back into her
+// bind pose by inverse linear-blend skinning: start from the nearest posed bone, read which two
+// bones move the bind-pose cell found and how much, blend their matrices and invert, twice over.
 float smin(float a, float b, float k) {
     float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
     return mix(b, a, h) - k * h * (1.0 - h);
 }
-
-// tapered capsule from a (radius ra) to b (radius rb)
-float sdCone(vec3 p, vec3 a, vec3 b, float ra, float rb, out float h) {
-    vec3 pa = p - a, ba = b - a;
-    h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-    return length(pa - ba * h) - mix(ra, rb, h);
+vec3 womanTC(vec3 q) { return (q - uWomanMin) / uWomanSize; }
+float womanBind(vec3 q) {                          // distance (m) to her surface, bind pose
+    vec3 tc = womanTC(q);
+    float outside = length(max(abs(tc - 0.5) - 0.5, 0.0) * uWomanSize);
+    if (outside > 0.0) return outside + 0.04;
+    return textureLod(uWomanD, tc, 0.0).r * 0.08 - 0.04;
 }
-
-// Unbend p around finger f of arm i; returns the rest-pose point, th = bend angle there.
-vec3 fingerRest(vec3 p, int i, int f, out float th) {
-    vec4 F = uFing[i * 5 + f];
-    float k = uFingK[i * 5 + f];
-    vec2 rel = p.xz - F.xy;
-    vec2 perp = vec2(-F.w, F.z);
-    float a = dot(rel, F.zw), c = dot(rel, perp), y = p.y;
-    th = 0.0;
-    if (a > 0.0 && k > 1e-5) {
-        vec2 v = vec2(a, y + 1.0 / k);
-        th = atan(v.x, v.y);
-        a = th / k;
-        y = length(v) - 1.0 / k;
+void blendSkin(int a, int b, float w, out mat3 R, out vec3 t) {
+    vec4 r0 = mix(uSkin[b * 3], uSkin[a * 3], w), r1 = mix(uSkin[b * 3 + 1], uSkin[a * 3 + 1], w),
+         r2 = mix(uSkin[b * 3 + 2], uSkin[a * 3 + 2], w);
+    R = transpose(mat3(r0.xyz, r1.xyz, r2.xyz));
+    t = vec3(r0.w, r1.w, r2.w);
+}
+vec3 unskin(vec3 p, int guess, out mat3 R) {
+    vec3 t;
+    blendSkin(guess, guess, 1.0, R, t);
+    vec3 q = transpose(R) * (p - t);
+    for (int it = 0; it < 2; it++) {
+        vec3 tc = womanTC(q);
+        if (any(greaterThan(abs(tc - 0.5), vec3(0.5)))) break;
+        vec4 sk = texelFetch(uWomanB, ivec3(tc * uWomanDims), 0) * 255.0;
+        blendSkin(int(sk.r + 0.5), int(sk.g + 0.5), sk.b / 255.0, R, t);
+        q = inverse(R) * (p - t);
     }
-    vec2 xz = F.xy + F.zw * a + perp * c;
-    return vec3(xz.x, y, xz.y);
+    return q;
 }
-
-// The hand and forearm as voxels (tools/build_hands.py): signed distances on a 1.9 mm grid, one
-// channel for the palm and forearm and one per finger (straight), plus colour and material. A
-// sample point is tested against the palm channel as it is, and against each finger's channel
-// after being unbent around that finger's knuckle, so every finger curls on its own. The left hand
-// is the same data mirrored.
-vec3 handTex(vec3 q, int i) {
-    if (i == 1) q.z = -q.z;
-    return (q - uHandO) / uHandS;
-}
-
-// distance (grid units) to arm i, the part that is nearest (0 palm and arm, 1..5 finger) and the
-// rest-pose point on it
-float handDist(vec3 p, int i, out int part, out vec3 rq) {
-    vec3 tc = handTex(p, i);
-    float outside = length(max(abs(tc - 0.5) - 0.5, 0.0) * uHandS);
-    float d = outside > 0.0 ? outside + 16.0 : textureLod(uHandA, tc, 0.0).r * 32.0 - 16.0;
-    float best = d;
-    part = 0;
-    rq = p;
-    for (int f = 0; f < 5; f++) {
-        float th;
-        vec3 q = fingerRest(p, i, f, th);
-        vec3 tq = handTex(q, i);
-        if (any(greaterThan(abs(tq - 0.5), vec3(0.5)))) continue;
-        float df = (f < 3 ? textureLod(uHandA, tq, 0.0)[f + 1] : textureLod(uHandB, tq, 0.0)[f - 3]) * 32.0 - 16.0;
-        if (df < best) { best = df; part = f + 1; rq = q; }
-        d = smin(d, df, 1.5);
+float womanDist(vec3 p, out vec3 qb, out mat3 R) {
+    float d0 = 1e9, d1 = 1e9;
+    int b0 = 0, b1 = 0;
+    for (int i = 0; i < 16; i++) {
+        vec3 a = uBoneA[i].xyz, ba = uBoneB[i].xyz - a, pa = p - a;
+        float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+        float dd = length(pa - ba * h);
+        if (dd < d0) { d1 = d0; b1 = b0; d0 = dd; b0 = i; }
+        else if (dd < d1) { d1 = dd; b1 = i; }
+    }
+    vec3 q = unskin(p, b0, R);
+    float d = womanBind(q);
+    qb = q;
+    if (d1 - d0 < 0.10) {                          // near a joint or between limbs: try the other bone
+        mat3 R2;
+        vec3 q2 = unskin(p, b1, R2);
+        float d2 = womanBind(q2);
+        if (d2 < d) { d = d2; qb = q2; R = R2; }
     }
     return d;
 }
-
-// returns distance in metres along the camera ray (or -1), the part hit, the hit point (arm grid)
-float traceArm(int i, vec3 dc, out int part, out vec3 hq, out float hth) {
-    mat3 Rt = transpose(uArmRot[i]);
-    vec3 ro = Rt * (-uArmPos[i]) / ARM_S;
-    vec3 rd = Rt * dc / ARM_S;
-    vec3 bmin = vec3(ARM_X0, -50.0, -98.0), bmax = vec3(560.0, 50.0, 98.0);
-    vec3 inv = 1.0 / rd;
-    vec3 ta = (bmin - ro) * inv, tb = (bmax - ro) * inv;
-    vec3 tn = min(ta, tb), tf = max(ta, tb);
-    float t = max(max(tn.x, tn.y), max(tn.z, 0.02)), t1 = min(min(tf.x, tf.y), tf.z);
-    part = -1;
-    hth = 0.0;
-    if (t >= t1) return -1.0;
-    float vl = length(rd);
-    for (int s = 0; s < 110; s++) {
-        vec3 q = ro + rd * t;
-        int pt;
-        vec3 rq;
-        float d = handDist(q, i, pt, rq);
-        if (d < 0.2) {
-            hq = q;
-            part = pt;
-            return t;
-        }
-        t += max(d * 0.75, 0.25) / vl;
-        if (t > t1) break;
-    }
-    return -1.0;
-}
-
-float gArmMetal = 0.0, gArmRough = 0.6, gArmTrans = 0.0;
-
-void shadeArm(int i, int part0, vec3 q, float unused, float t, out vec3 alb, out vec3 nc) {
-    const vec2 k = vec2(1.0, -1.0);
-    const float e = 0.5;
-    int pt;
-    vec3 rq;
-    vec3 n = normalize(k.xyy * handDist(q + k.xyy * e, i, pt, rq) + k.yyx * handDist(q + k.yyx * e, i, pt, rq)
-                     + k.yxy * handDist(q + k.yxy * e, i, pt, rq) + k.xxx * handDist(q + k.xxx * e, i, pt, rq));
-    handDist(q, i, pt, rq);
-    vec4 c = textureLod(uHandC, handTex(rq, i), 0.0);
-    alb = c.rgb;
-    int mat = int(c.a * 255.0 / 50.0 + 0.5);
-    gArmMetal = mat == 4 ? 1.0 : 0.0;
-    gArmTrans = mat == 0 ? 0.25 : 0.0;              // light through skin
-    gArmRough = mat == 1 ? 0.62 : (mat == 2 ? 0.9 : (mat == 3 ? 0.32 : (mat == 4 ? 0.38 : 0.52)));
-    nc = normalize(uArmRot[i] * n);
-}
-
-// ---------------------------------------------------------------------------------------------
-// The pickaxe in the right hand, per pixel: distance-field shapes in tool space (x along the head,
-// y across it, z up the haft from the grip), all in arm-grid units (1.25 mm). An iron head, a pick
-// on one side and a broad adze blade on the other, on an ash haft; both caked with dirt.
-const float PK_HAFT_R = 14.0;     // haft radius
-const float PK_BUTT = -88.0;      // haft's end below the hand
-const float PK_HEAD_Z = 400.0;    // head centre up the haft (50 cm)
-const float PK_PICK_L = 245.0;    // pick arm length (31 cm)
-const float PK_ADZE_L = 175.0;    // adze arm length
-
-float sdBox(vec3 p, vec3 b) {
-    vec3 q = abs(p) - b;
-    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
-}
-
-// x = distance, y = material (0 iron head, 2 wooden haft)
-vec2 swordSdf(vec3 q) {
-    // the haft: slightly oval and tapering toward the head, a swelled knob at the butt
-    float rr = PK_HAFT_R * (1.0 + 0.10 * clamp(-q.z / 90.0, 0.0, 1.0)) - 0.0035 * max(q.z, 0.0);
-    float haft = max(length(q.xy * vec2(1.0, 1.15)) - rr, max(PK_BUTT - q.z, q.z - PK_HEAD_Z - 30.0)) * 0.85;
-    haft = min(haft, length((q - vec3(0.0, 0.0, PK_BUTT + 6.0)) * vec3(1.0, 1.1, 1.5)) / 1.5 - 13.0);
-    vec3 h = q - vec3(0.0, 0.0, PK_HEAD_Z);
-    // the head: one forged crescent bar through the top of the haft, thick in the middle and
-    // curving down to a sharp point on one side and a narrow chisel on the other
-    float L = h.x > 0.0 ? PK_PICK_L : PK_ADZE_L;
-    float sx = clamp(h.x, -PK_ADZE_L, PK_PICK_L), u = abs(sx) / L;
-    float zc = -0.0012 * sx * sx;                      // the curve, both arms dropping toward the hand
-    float ht = mix(17.0, h.x > 0.0 ? 1.5 : 2.5, pow(u, 0.9));      // half height
-    float wd = mix(12.0, h.x > 0.0 ? 1.5 : 9.0, pow(u, 0.9));      // half width: point vs chisel
-    vec2 e = vec2(abs(h.y) - wd, abs(h.z - zc) - ht);
-    float head = (length(max(e, 0.0)) + min(max(e.x, e.y), 0.0)) * 0.7;
-    head = max(head, abs(h.x - (PK_PICK_L - PK_ADZE_L) * 0.5) - (PK_PICK_L + PK_ADZE_L) * 0.5);
-    // the eye: a slim swelling where the haft passes through, not a block
-    head = min(head, (length(h * vec3(1.0, 1.0, 0.85)) - 21.0));
-    return head < haft ? vec2(head, 0.0) : vec2(haft, 2.0);
-}
-
-// ray in right-arm grid space (t in metres, as traceArm); returns t or -1, hit in tool space
-float traceSword(vec3 ro, vec3 rd, out vec3 hq, out float mat) {
-    vec3 F = cross(uSwordB, uSwordE);
-    mat3 W = mat3(uSwordE.x, F.x, uSwordB.x, uSwordE.y, F.y, uSwordB.y, uSwordE.z, F.z, uSwordB.z);
-    vec3 o = W * (ro - uSwordO), v = W * rd;
-    vec3 bmin = vec3(-PK_ADZE_L - 30.0, -45.0, PK_BUTT - 25.0), bmax = vec3(PK_PICK_L + 10.0, 45.0, PK_HEAD_Z + 50.0);
-    vec3 inv = 1.0 / v;
-    vec3 ta = (bmin - o) * inv, tb = (bmax - o) * inv;
-    vec3 tn = min(ta, tb), tf = max(ta, tb);
-    float t = max(max(tn.x, tn.y), max(tn.z, 0.02)), t1 = min(min(tf.x, tf.y), tf.z);
-    if (t >= t1) return -1.0;
-    float vl = length(v);
-    for (int i = 0; i < 90; i++) {
-        vec3 q = o + v * t;
-        vec2 d = swordSdf(q);
-        if (d.x < 0.3) { hq = q; mat = d.y; return t; }
-        t += max(d.x, 0.25) / vl;
-        if (t > t1) break;
-    }
-    return -1.0;
-}
-
-vec3 swordNormal(vec3 q) {
-    const vec2 k = vec2(1.0, -1.0);
-    const float e = 0.5;
-    return normalize(k.xyy * swordSdf(q + k.xyy * e).x + k.yyx * swordSdf(q + k.yyx * e).x
-                   + k.yxy * swordSdf(q + k.yxy * e).x + k.xxx * swordSdf(q + k.xxx * e).x);
-}
+// her detail maps (texture-array layers after the ground's): height + normal, traced with parallax
+int womanLayer(int m) { return m == 1 ? 15 : (m == 5 ? 16 : (m == 2 ? 17 : (m == 3 ? 19 : (m == 0 ? 18 : -1)))); }
+float womanTile(int m) { return m == 1 ? 0.035 : (m == 5 ? 0.05 : (m == 2 ? 0.06 : (m == 3 ? 0.07 : 0.03))); }
+float womanDepth(int m) { return m == 1 ? 0.0016 : (m == 5 ? 0.0022 : (m == 2 ? 0.0016 : (m == 3 ? 0.003 : 0.0006))); }
 
 // Rock texture set wrapped onto any slope (walls, ceilings, tunnels, boulders): three planar
 // projections blended by the normal, with the normal maps combined the same way ("whiteout").
@@ -878,7 +823,7 @@ void main() {
     float t = 0.05 + bayer4(gl_FragCoord.xy) * 0.012, prevT = 0.0, hitT = -1.0;   // dithered start
     float isFern = 0.0;
     vec3 fcol = vec3(0.0);
-    for (int i = 0; i < 260; i++) {
+    for (int i = 0; i < MARCH_STEPS; i++) {
         vec3 p = ro + d * t;
         float dd = volDist(p);
         float tw = 0.0;
@@ -1021,6 +966,12 @@ void main() {
     rough = mix(rough, rough * 0.35, wetK);
     float trans = (mid < 0.5 || mid > 4.5 || isFern > 0.5) ? 0.25 + 0.25 * isFern : 0.0;
     float sunLit = 1.0 - 0.85 * shadow;                                // cloud shadow
+    if (uCharShow > 0.5 && hit > 0.5) {         // her shadow on the ground, soft, away from the sun
+        vec2 sc = uCharSphere.xz - uSunDir.xz / max(uSunDir.y, 0.35) * 0.6;
+        float blob = (1.0 - smoothstep(0.10, 0.45, length(hp.xz - sc))) * smoothstep(1.4, 0.3, abs(hp.y - (uCharSphere.y - 0.85)));
+        sunLit *= 1.0 - 0.75 * blob;
+        light *= 1.0 - 0.25 * blob;
+    }
     if (isGrass > 0.5) {
         sunLit *= clamp(gt.a * 2.0 - 1.0, 0.0, 1.0);                     // tree shadows on textured ground
         if (T < SURF_FAR) sunLit *= surfShadow(wp, T);                   // self-shadowed relief
@@ -1032,7 +983,14 @@ void main() {
         vec3 plain = toLin(uAmbient) * SKY_E * mix(0.05, 1.0, open) * (0.75 + 0.25 * n.y);
         gGI = mix(gi, plain, far);
     }
+    albedo = alienGround(albedo);
     vec3 land = pbr(albedo * mix(1.0, 0.70, wetK), n, -d, rough, 0.0, sunLit, open, 1.0, lamp, trans);
+    // glowing spores in the alien turf, waking at dusk
+    if (isGrass > 0.5 && T < 40.0) {
+        vec2 cellg = floor(wp * 9.0);
+        float spore = step(0.982, hash(cellg)) * smoothstep(0.42, 0.10, length(fract(wp * 9.0) - 0.5));
+        land += mix(vec3(0.15, 0.95, 0.85), vec3(0.85, 0.30, 0.95), hash(cellg + 5.0)) * spore * (0.15 + 0.85 * uStars) * 0.8;
+    }
     gGI = vec3(-1.0);
     float fres = 0.25 + 0.75 * pow(1.0 - min(max(-d.y, 0.0), 1.0), 5.0);
     vec3 wcol = mix(gt.rgb * light * 0.8, sky * 0.92 * mix(0.05, 1.0, open), fres);
@@ -1052,27 +1010,100 @@ void main() {
     vec3 col = mix(missCol, ground, hit);
     col += uFlash * vec3(0.55, 0.60, 0.75) * (0.4 + 0.6 * (1.0 - hit)) * open;
 
-    // ---- clods of dirt knocked loose by the pickaxe: small lumpy balls, flying, rolling, settling
-    for (int i = 0; i < 48; i++) {
-        if (i >= uClodN) break;
-        vec4 c = uClods[i];
-        vec3 oc = ro - c.xyz;
-        float b = dot(oc, d), h = b * b - (dot(oc, oc) - c.w * c.w);
-        if (h < 0.0) continue;
-        float tc = -b - sqrt(h);
-        if (tc < 0.05 || tc > (hit > 0.5 ? T : FAR)) continue;
-        vec3 cpos = ro + d * tc;
-        vec3 cn = normalize(cpos - c.xyz);
-        vec3 lq = floor(cn * 3.0 + float(i) * 7.0);                         // a few flat facets: lumpy
-        cn = normalize(cn + (vec3(hash(lq.xy), hash(lq.yz + 3.1), hash(lq.zx + 7.3)) - 0.5) * 0.9);
-        float co = volOpen(c.xyz);
-        float cdark = clamp(1.0 - co * (1.0 - uStars * 0.85), 0.0, 1.0);
-        vec3 soil = vec3(0.30, 0.21, 0.14) * (0.70 + 0.45 * hash(vec2(float(i), 3.0))) * (0.85 + 0.3 * hash(floor(cpos.xz * 60.0)));
-        col = pbr(soil, cn, -d, 0.95, 0.0, 1.0, co, 1.0, 1.4 / (1.0 + tc * tc * 0.09) * cdark, 0.0);
-        col = mix(col, mix(vec3(0.0), uFogCol, co), 1.0 - exp(-tc * uFog));
-        T = tc;
-        hit = 1.0;
-        shaftMask = 0.0;
+    // ---- the player (third person): march her inside her bounding sphere
+    if (uCharShow > 0.5) {
+        vec3 oc = ro - uCharSphere.xyz;
+        float bq = dot(oc, d), hq = bq * bq - (dot(oc, oc) - uCharSphere.w * uCharSphere.w);
+        if (hq > 0.0) {
+            float sq = sqrt(hq);
+            float t = max(-bq - sq, 0.05), tEnd = min(-bq + sq, hit > 0.5 ? T : FAR);
+            vec3 qb;
+            mat3 R;
+            bool got = false;
+            for (int i = 0; i < CHAR_STEPS; i++) {
+                if (t > tEnd) break;
+                float dc = womanDist(ro + d * t, qb, R);
+                if (dc < 0.0008) { got = true; break; }
+                t += max(dc * 0.8, 0.0015);
+            }
+            if (got) {
+                vec3 p = ro + d * t;
+                womanDist(p, qb, R);
+                // the surface in her bind pose: normal from the voxels
+                const vec2 kk = vec2(1.0, -1.0);
+                const float e = 0.0035;
+                vec3 nb = normalize(kk.xyy * womanBind(qb + kk.xyy * e) + kk.yyx * womanBind(qb + kk.yyx * e)
+                                  + kk.yxy * womanBind(qb + kk.yxy * e) + kk.xxx * womanBind(qb + kk.xxx * e));
+                vec4 cm = textureLod(uWomanC, womanTC(qb), 0.0);
+                int m = int(cm.a * 255.0 / 50.0 + 0.5);
+                vec3 alb = cm.rgb;
+                mat3 Ri = inverse(R);
+                vec3 vb = normalize(Ri * d);                   // the view, in her bind pose
+                vec3 sb = normalize(Ri * uSunDir);             // the sun, too
+                vec3 n = nb;
+                float relief = 1.0, ao = 1.0;
+                int layer = womanLayer(m);
+                if (layer >= 0 && t < 9.0) {
+                    // project the detail maps from the side the surface faces most
+                    vec3 an = abs(nb), T1, B1;
+                    vec2 uv;
+                    if (an.x > an.y && an.x > an.z) { T1 = vec3(0.0, 0.0, sign(nb.x)); B1 = vec3(0.0, 1.0, 0.0); }
+                    else if (an.z > an.y)           { T1 = vec3(-sign(nb.z), 0.0, 0.0); B1 = vec3(0.0, 1.0, 0.0); }
+                    else                            { T1 = vec3(1.0, 0.0, 0.0); B1 = vec3(0.0, 0.0, -sign(nb.y)); }
+                    float tile = womanTile(m), depth = womanDepth(m);
+                    uv = vec2(dot(qb, T1), dot(qb, B1)) / tile;
+                    // parallax occlusion: step down into the height map along the view
+                    float vn = dot(vb, nb);
+                    vec2 drift = vec2(dot(vb, T1), dot(vb, B1)) / max(-vn, 0.25) * depth / tile;
+                    vec2 uvh = uv;
+                    float prevH = 1.0, prevD = 0.0;
+                    const int PS = POM_STEPS;
+                    for (int k = 1; k <= PS; k++) {
+                        float dk = float(k) / float(PS);
+                        vec2 u2 = uv + drift * dk;
+                        float hh = 1.0 - textureLod(uSurfNH, vec3(u2, float(layer)), 0.0).b;
+                        if (hh <= dk) {
+                            float a = prevH - prevD, b2 = hh - dk;
+                            uvh = uv + drift * mix(prevD, dk, a / max(a - b2, 1e-4));
+                            break;
+                        }
+                        prevH = hh; prevD = dk; uvh = u2;
+                    }
+                    vec4 nh = textureLod(uSurfNH, vec3(uvh, float(layer)), 0.0);
+                    // parallax shadows: does the relief itself stand between this point and the sun?
+                    float h0 = nh.b, sn = dot(sb, nb);
+                    if (sn > 0.0) {
+                        vec2 toSun = vec2(dot(sb, T1), dot(sb, B1)) / max(sn, 0.2) * depth / tile;
+                        float occ = 0.0;
+                        for (int k = 1; k <= 6; k++) {
+                            float dk = float(k) / 6.0 * (1.0 - h0);
+                            float hs = textureLod(uSurfNH, vec3(uvh + toSun * dk, float(layer)), 0.0).b;
+                            occ = max(occ, (hs - (h0 + dk)) * 4.0);
+                        }
+                        relief = 1.0 - clamp(occ, 0.0, 0.85);
+                    }
+                    // normal map
+                    vec2 tn = nh.rg * 2.0 - 1.0;
+                    float tz = sqrt(max(0.0, 1.0 - dot(tn, tn)));
+                    n = normalize(T1 * tn.x + B1 * tn.y + nb * tz);
+                    ao = mix(0.70, 1.0, h0);                    // the hollows of the weave are darker
+                    alb *= textureLod(uSurfCol, vec3(uvh, float(layer)), 0.0).r * 1.2;
+                }
+                vec3 nw = normalize(R * n);
+                float rough = m == 0 ? 0.55 : (m == 1 ? 0.85 : (m == 2 ? 0.55 : (m == 3 ? 0.42 : (m == 4 ? 0.35 : 0.9))));
+                float metal = m == 4 ? 1.0 : 0.0;
+                float co = volOpen(p + nw * 0.3);
+                float cdark = clamp(1.0 - co * (1.0 - uStars * 0.85), 0.0, 1.0);
+                float cloud = coverage(cloudField(uCloudO + (p.xz - ro.xz)));
+                vec3 cc = pbr(alb, nw, -d, rough, metal, (1.0 - 0.85 * cloud) * relief, co, ao,
+                              1.4 / (1.0 + t * t * 0.09) * cdark, m == 0 ? 0.25 : 0.0);
+                cc = mix(cc, mix(vec3(0.0), uFogCol, co), 1.0 - exp(-t * uFog));
+                col = cc;
+                T = t;
+                hit = 1.0;
+                shaftMask = 0.0;
+            }
+        }
     }
 
     // ---- trees: walk the 16 m cells the ray crosses (nearest first), trace each cell's tree
@@ -1100,7 +1131,7 @@ void main() {
             vec2 tMax = ((cell + max(sgn, 0.0)) * TC - ro.xz) * sgn * inv;
             vec2 tDel = TC * inv;
             float tCell = 0.0;
-            for (int i = 0; i < 26; i++) {
+            for (int i = 0; i < TREE_CELLS; i++) {
                 if (tCell > tLimit) break;
                 vec4 f = texture(uTrees, (mod(cell, 32.0) + 0.5) / 32.0);
                 if (f.a > 0.5) {
@@ -1120,7 +1151,7 @@ void main() {
                     int pid;
                     vec2 uv;
                     float th = traceSpecies(sp, rol, rdl, tLimit / sz, sz, pid, uv);
-                    if (th > 0.0) {
+                    if (th > 0.0 && th * sz > uCamNear) {      // (no leaves between you and her)
                         bestT = th * sz; bestSp = sp; bestPid = pid; bestUv = uv;
                         bestHl = rol + rdl * th; bestRdl = rdl; bestYaw = yaw; bestScale = sz;
                         break;
@@ -1134,6 +1165,8 @@ void main() {
             vec3 alb, tn;
             float isLeaf;
             shadeTree(bestSp, bestPid, bestUv, bestHl, bestRdl, bestYaw, alb, tn, isLeaf);
+            // alien flora: strange leaf colours per species, pale chalky bark with a violet cast
+            alb = isLeaf > 0.5 ? alienLeaf(alb, float(bestSp)) : mix(alb, vec3(0.70, 0.66, 0.74), 0.55) * vec3(0.95, 0.9, 1.05);
             // physically based: bark rough, leaves a little glossy and translucent; darker low down
             float tao = 0.70 + 0.30 * clamp(bestHl.y / max(uTreeMeta[bestSp * 6 + 5].w, 1.0), 0.0, 1.0);
             float tdark = clamp(uStars * 0.85, 0.0, 1.0);
@@ -1141,75 +1174,9 @@ void main() {
             vec3 tnf = dot(tn, -d) < 0.0 && isLeaf > 0.5 ? -tn : tn;          // leaves are two-sided
             vec3 tc = pbr(alb, tnf, -d, isLeaf > 0.5 ? 0.55 : 0.88, 0.0, tao, 1.0, tao, tlamp, isLeaf * 0.9);
             tc = mix(tc, uFogCol, 1.0 - exp(-bestT * uFog));
+            // leaf tips glow softly (brighter at night)
+            if (isLeaf > 0.5) tc += alienLeaf(vec3(0.2, 0.9, 0.3), float(bestSp)) * step(0.94, hash(bestUv * 37.0 + float(bestPid))) * (0.03 + 0.22 * uStars);
             col = tc + uFlash * vec3(0.55, 0.60, 0.75) * 0.4;
-            shaftMask = 0.0;
-        }
-    }
-
-    // ---- first-person arms (in front of everything)
-    if (uArmShow > 0.5) {
-        vec3 aq0, aq1, aq;
-        float ath0, ath1, ath;
-        int ap0, ap1, ap;
-        float at0 = traceArm(0, dCam, ap0, aq0, ath0);
-        float at1 = traceArm(1, dCam, ap1, aq1, ath1);
-        int ai = -1;
-        float at = 1e9;
-        if (at0 > 0.0) { ai = 0; at = at0; ap = ap0; aq = aq0; ath = ath0; }
-        if (at1 > 0.0 && at1 < at) { ai = 1; at = at1; ap = ap1; aq = aq1; ath = ath1; }
-        // the pickaxe, in the right arm's space
-        vec3 sq;
-        float smat = 0.0, st = -1.0;
-        if (uSwordShow > 0.5) {
-            mat3 Rt0 = transpose(uArmRot[0]);
-            st = traceSword(Rt0 * (-uArmPos[0]) / ARM_S, Rt0 * dCam / ARM_S, sq, smat);
-        }
-        float swordOpen = volOpen(uCam);
-        if (st > 0.0 && st < at) {
-            ai = -1;
-            vec3 F = cross(uSwordB, uSwordE);
-            vec3 ns = swordNormal(sq);
-            vec3 nc = normalize(uArmRot[0] * (uSwordE * ns.x + F * ns.y + uSwordB * ns.z));
-            vec3 nw = vec3(nc.x, nc.y * cp - nc.z * sp, nc.y * sp + nc.z * cp);
-            nw = vec3(nw.x * cy - nw.z * sy, nw.y, nw.x * sy + nw.z * cy);
-            float sdark = clamp(1.0 - swordOpen * (1.0 - uStars * 0.85), 0.0, 1.0);
-            float slamp = 1.0 * sdark;
-            // point-sampled: pits, scratches and grime on 2.5 mm texels
-            vec2 tq = floor(vec2(sq.x * 0.5 + sq.y, sq.z * 0.5));
-            float wear = hash(tq) * 0.5 + hash(floor(tq / 6.0)) * 0.5;
-            // dirt caked on from digging: thickest on the points and the lower head, smears on the haft
-            float grime = vnoise(sq.xz * 0.045 + sq.y * 0.03) * 0.65 + hash(floor(tq / 3.0)) * 0.35;
-            vec3 sc;
-            if (smat < 0.5) {                       // forged iron, dark and dull, bright where it bites
-                float tipK = smoothstep(110.0, 230.0, abs(sq.x - 30.0));
-                float below = smoothstep(10.0, -25.0, sq.z - PK_HEAD_Z);
-                float dirt = smoothstep(0.62, 0.80, grime + 0.22 * tipK + 0.10 * below);
-                float shine = smoothstep(185.0, 240.0, sq.x) + smoothstep(135.0, 172.0, -sq.x);   // worn bright edges
-                vec3 iron = vec3(0.46, 0.46, 0.47) * (0.80 + 0.30 * wear) + vec3(0.25) * shine;
-                vec3 soil = vec3(0.30, 0.21, 0.13) * (0.70 + 0.45 * wear);
-                vec3 alb = mix(iron, soil, dirt);
-                sc = pbr(alb, nw, -d, mix(mix(0.48, 0.28, shine), 0.95, dirt), mix(1.0, 0.0, dirt), 1.0, swordOpen, 1.0, slamp, 0.0);
-            } else {                                // ash haft: grain along it, polished by the hand, muddy at the butt
-                float grain = 0.5 + 0.5 * sin(sq.x * 0.9 + vnoise(vec2(sq.z * 0.02, sq.x * 0.1)) * 6.0 + sq.z * 0.01);
-                vec3 wood = vec3(0.47, 0.33, 0.19) * (0.78 + 0.22 * grain) * (0.85 + 0.25 * wear);
-                float dirt = smoothstep(0.66, 0.84, grime + 0.30 * smoothstep(-30.0, -80.0, sq.z) + 0.15 * smoothstep(250.0, 370.0, sq.z));
-                dirt *= 1.0 - smoothstep(60.0, 0.0, abs(sq.z - 10.0)) * 0.8;          // the grip is rubbed clean
-                vec3 soil = vec3(0.29, 0.21, 0.14) * (0.75 + 0.4 * wear);
-                sc = pbr(mix(wood, soil, dirt), nw, -d, mix(0.55, 0.95, dirt), 0.0, 1.0, swordOpen, 1.0, slamp, 0.0);
-            }
-            col = sc;
-            shaftMask = 0.0;
-        }
-        if (ai >= 0) {
-            vec3 alb, nc;
-            shadeArm(ai, ap, aq, ath, at, alb, nc);
-            // camera -> world, same rotations as the view ray
-            vec3 nw = vec3(nc.x, nc.y * cp - nc.z * sp, nc.y * sp + nc.z * cp);
-            nw = vec3(nw.x * cy - nw.z * sy, nw.y, nw.x * sy + nw.z * cy);
-            float armOpen = volOpen(uCam);
-            float adark = clamp(1.0 - armOpen * (1.0 - uStars * 0.85), 0.0, 1.0);
-            // physically based: skin with a little light through it, leather, linen, iron buckles
-            col = pbr(alb, nw, -d, gArmRough, gArmMetal, 1.0, armOpen, 1.0, 1.0 * adark, gArmTrans);
             shaftMask = 0.0;
         }
     }

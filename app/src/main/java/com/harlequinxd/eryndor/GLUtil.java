@@ -29,7 +29,14 @@ final class GLUtil {
         }
     }
 
+    /** Running on a phone (Android's runtime): shaders are built with MOBILE defined. */
+    static final boolean MOBILE = "Dalvik".equals(System.getProperty("java.vm.name"));
+
     static int program(String vs, String fs) {
+        if (MOBILE) {                                  // right after the #version line
+            int nl = fs.indexOf('\n');
+            fs = fs.substring(0, nl + 1) + "#define MOBILE 1\n" + fs.substring(nl + 1);
+        }
         int v = shader(GLES20.GL_VERTEX_SHADER, vs);
         int f = shader(GLES20.GL_FRAGMENT_SHADER, fs);
         int p = GLES20.glCreateProgram();

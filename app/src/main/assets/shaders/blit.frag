@@ -13,7 +13,11 @@ uniform vec4 uGrade;       // colour grade: warmth (-1 cool .. 1 warm), saturati
 in vec2 vUv;
 out vec4 fragColor;
 
+#ifdef MOBILE
+const int SHAFT_STEPS = 8;
+#else
 const int SHAFT_STEPS = 18;
+#endif
 
 float bayer2(vec2 a) { a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
 float bayer4(vec2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }

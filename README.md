@@ -1,8 +1,33 @@
 # Chronicles of Eryndor: Hollowspire
 
-A first-person fantasy RPG for Android. First milestone: the world around the village of
+A third-person exploration game on an alien world, for Android and PC. First milestone: the world around the village of
 Hollowspire.
 
+- **An alien world**: the land is an alien planet. Meadows grow indigo and violet turf with
+  glowing spores that wake at dusk, bare earth is magenta and slate, rock has a cold cast; the
+  flora is alien too, every species with its own strange leaf colour (crimson, cyan, acid gold,
+  coral, violet) on pale chalky bark, with leaf tips that glow at night. The sky is violet and
+  teal with a rose horizon, and **two moons** cross it, both lit by the sun so they show phases
+  and both visible by day: a great banded pale-violet moon and a small rust-red one that moves
+  faster. You can't dig the ground.
+- **The player, a voxel woman, in third person**: sculpted in `tools/build_woman.py` and baked as
+  ONE whole voxel model (7 mm cells, signed distance + colour) in her bind pose, rigged to a
+  16-bone skeleton: every cell stores the two bones that move it and their weights, shared
+  smoothly across each joint. Each frame the skeleton is posed (walking, breathing, an idle shift
+  of weight) and the shader carries each sample point back into the bind pose by inverse
+  linear-blend skinning, so the one model bends smoothly at the knees, hips, elbows and shoulders.
+  She wears an orange T-shirt with a green alien head on the chest, brown cargo trousers with thigh
+  pockets and a belt with a brass buckle, laced army boots, and her dark brown hair in a high
+  ponytail. Her surfaces have their own detail maps (`tools/build_woman_maps.py`): a height map
+  and the normal map made from it for the jersey knit, the cargo twill, pebbled boot leather, skin
+  and hair, mapped onto her from three sides and traced with **parallax occlusion** plus
+  **parallax self-shadowing** (the relief shades itself away from the sun), with the hollows of
+  the weave darkened. The camera sits behind her over the right shoulder, pulls in where rock is
+  in the way, and trees between you and her are cut away; she casts a soft shadow.
+- **Runs on phones**: on Android the shaders are built in a mobile mode (fewer ray steps, shorter
+  view distance, no traced bounce light, fewer sun-shaft samples, lighter parallax), the game
+  starts at 180 lines and the resolution follows the frame rate (120 to 240 lines, still filling
+  the screen), and it asks for a large heap for the streamed world.
 - **Pixel-voxel terrain (a volume, not a heightmap)**: the land is a 3D signed-distance volume
   (0.5 m samples, 64 m tall; the GPU holds a 256 m window of it around you) traced per screen
   pixel: sphere steps through open air, fine steps near the surface, trilinear blending so every
@@ -49,31 +74,19 @@ Hollowspire.
   and two colours. Nothing is a mesh: every pixel's ray walks the 16 m tree cells, steps through
   each species' zone grid and tests the capsules and leaf cards inside. Bark has 4 textures.
   Shadows on the ground are cast from the real branches and leaves.
-- **First-person hands, voxels traced per pixel**: the hands and forearms are sculpted in
-  `tools/build_hands.py` and baked into voxels: signed distances on a 1.9 mm grid that the shader
-  blends trilinearly and sphere-traces per pixel (smooth, no cubes), with one distance channel for
-  the palm and forearm and one per finger, plus a colour and material volume. Sculpted detail: a
-  padded palm with thenar and hypothenar pads and the three palm lines, knuckles, tendons fanning
-  to the knuckles and veins on the back of the hand, jointed fingers with pads, joint creases,
-  knuckle wrinkles and fingernails with pale tips; a dark leather bracer with two straps, iron
-  buckles and stitched seams, and a wound linen wrap at the wrist. Every finger curls on its own:
-  each sample point is unbent around that finger's knuckle before it is looked up, so the hands
-  relax, breathe, tighten as you walk and close round the pickaxe handle. The left hand is the
-  same data mirrored. Re-sculpt with `python3 tools/build_hands.py app/src/main/assets/hands`.
-- **Physically based rendering**: one shading function for the ground, trees, arms and pickaxe:
+- **Physically based rendering**: one shading function for the ground, trees and the player:
   Lambert diffuse plus Cook-Torrance specular (GGX, Smith/Schlick-GGX, Schlick Fresnel) from the
   sun, the sky as hemisphere ambient and as a roughness-blurred reflection (split-sum with an
   analytic environment BRDF), and the lantern as a light at the eye; linear-light maths with a
   soft-shoulder tone map. Roughness per material (grass 0.9, cobbles 0.62, wet ground glossier),
-  metals take their colour as F0 (the pickaxe's iron head, the bracers'
-  buckles), and leaves and grass let light through from behind.
+  metals take their colour as F0 (her belt buckle), and leaves and grass let light through from behind.
 - **Real-time global illumination**: each ground pixel within 45 m casts three short rays over
   the heightmap across its hemisphere (directions dithered per pixel); escaped rays bring sky
   light, rays that hit terrain bring the light bounced off that spot (its colour, lit by sun and
   sky, and how open its sky is). Colour bleeding, ambient occlusion in hollows and caves, and cave
-  mouths lighting the tunnel. Trees, arms and the pickaxe get sky plus light bounced up off the meadow.
+  mouths lighting the tunnel. Trees and the player get sky plus light bounced up off the meadow.
 - **Sun shafts and glare**: the scene writes how much open sky each pixel shows into its alpha
-  (clouds, hills, the Hollowspire, trees, arms and the pickaxe all block it); the final pass blurs
+  (clouds, hills, the Hollowspire, trees and the player all block it); the final pass blurs
   that mask toward the sun's place on screen (dithered steps) for light shafts through branches
   and around clouds, and adds a sun halo, a horizontal glint and lens ghosts that dim when the
   sun's disc is hidden.
@@ -103,15 +116,6 @@ Hollowspire.
   ray steps so there's no banding; the map itself no longer paints or raises small flora (flowers,
   shrubs, tall grass clumps, reeds, mushroom rings, ferns) or paving joints; rocks, logs,
   stumps, cairns, curbs and walls remain (`WorldTextures.FLORA` turns the flora back on).
-- **Pickaxe and digging**: an iron pickaxe in the right hand, traced per pixel: one curved forged
-  head through the top of an ash handle, a sharp point on one side and a narrow chisel blade on
-  the other, dark iron worn bright at the tips, both head and handle caked with dirt (the grip is
-  rubbed clean). Left click / RT swings it: wind up, strike, recover (hold to keep digging). Where
-  it lands (up to 3 m ahead, along your view) it bites a rough scoop out of the voxel ground, and
-  5-9 clods of dirt break off and fly out of the bite. They tumble, bounce and roll against the
-  real terrain, then crumble away (no spoil heaps: digging only removes ground, so a hole just
-  gets deeper). Dug ground shows as bare earth. What you dig is kept per chunk and comes back
-  when you return. F / B puts the pickaxe away.
 - **Tree Builder** (button top-left): pick any of the 10 species and edit it with sliders in six
   tabs (Trunk, Branches, Sub-branches, Twigs, Leaves, Bark): height, bend, flare, branch count,
   angle, droop, twig density, leaf shape, size, count and colours, bark type and colour. The tree
@@ -153,8 +157,6 @@ last ten years).
 | Look | Right stick | Mouse (click the window; Esc frees the mouse) |
 | Change the weather | Y | Q |
 | Speed up time | X | T |
-| Swing the pickaxe (dig) | RT | Left click (hold to keep digging) |
-| Take out / put away the pickaxe | B | F |
 | Invert look | Click right stick | I |
 | Show / hide help | View or Menu | F1 |
 | Full screen | | F11 or Alt+Enter |

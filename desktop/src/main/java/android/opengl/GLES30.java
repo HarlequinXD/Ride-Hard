@@ -15,6 +15,7 @@ public class GLES30 extends GLES20 {
     public static final int GL_TEXTURE_3D = org.lwjgl.opengl.GL12.GL_TEXTURE_3D;
     public static final int GL_TEXTURE_WRAP_R = org.lwjgl.opengl.GL12.GL_TEXTURE_WRAP_R;
     public static final int GL_RG8 = GL30.GL_RG8;
+    public static final int GL_R8 = GL30.GL_R8;
 
     public static void glTexImage3D(int target, int level, int internalFormat, int w, int h, int depth, int border,
                                     int format, int type, java.nio.Buffer pixels) {

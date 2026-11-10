@@ -25,6 +25,10 @@ final class GameRenderer implements GLSurfaceView.Renderer {
 
     /** GBA vertical resolution; width follows the screen's aspect so it fills the whole display. */
     private static final int LOW_RES_LINES = 240;           // PS1 resolution: 240 lines, width follows the screen
+    /** Lines actually rendered: phones start lower, and it follows the frame rate (120..240). */
+    private int lines = GLUtil.MOBILE ? 180 : LOW_RES_LINES;
+    private float frameAcc;
+    private int frameCount;
     private static final float FOV_Y = (float) Math.toRadians(68);
     private static final float EYE_HEIGHT = 1.68f;
     private static final float MAX_STEP_UP = 0.55f;     // tallest step the player climbs without jumping
@@ -71,20 +75,23 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private int treePrimTex, treeCellTex, treeIdxTex, leafAtlasTex, uploadedTreeVersion = -1;
     // first-person arms: colour / normal / height sheets (decoded off the GL thread)
     // first-person hands as voxels (tools/build_hands.py): two distance volumes and a colour volume
-    private int handATex, handBTex, handCTex;
-    private java.nio.ByteBuffer handA, handB, handC;
-    private int handNx, handNy, handNz;
-    private float handCell, handX0, handY0, handZ0;
+    // the player: one voxel woman rigged to a skeleton (tools/build_woman.py), seen from behind
+    private final Woman woman = new Woman();
+    private int womanDTex, womanCTex, womanBTex;
+    private float charYaw = 0f, walkPhase, walkAmt;
+    private double lastPx = Double.NaN, lastPz;
+    private double camDist = 2.8;
     // terrain volume (tunnels, caves, overhangs): 3D RG8, distance + sky openness
     private int volTex;
     // ground texture sets, one array layer each (order = layer index in scene.frag):
     // colour, and normal map + height packed together; tiling, point sampled
     static final String[] SURFACES = {"grass", "cobble", "dirt", "rock", "forest", "gravel", "sand", "snow",
-            "moss", "needles", "roots", "mud", "forestgrass", "cliff", "mossyrock"};
+            "moss", "needles", "roots", "mud", "forestgrass", "cliff", "mossyrock",
+            // the player's detail maps (height + normal), traced with parallax on her clothes and skin
+            "w_shirt", "w_cargo", "w_leather", "w_skin", "w_hair"};
     private int surfColTex, surfNHTex;
     private int[][] surfCol, surfNH;
     private int surfSize;
-    private final ArmRig arms = new ArmRig();
     private final float[] treeMeta = new float[TreeLibrary.SLOTS * TreeLibrary.META * 4];
 
     // Tree Builder preview: one species shown at a fixed spot, camera orbiting it
@@ -130,7 +137,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         Loading.set("Raising the land around you", 0.06f);
         streamer.loadAll(px, pz, 0.06f, 0.80f);
         Loading.set("Shaping your hands", 0.825f);
-        loadHands();
+        try (InputStream rig = assets.open("woman/rig.txt"); InputStream data = assets.open("woman/woman.bin.gz")) {
+            woman.load(rig, data);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("missing woman/", e);
+        }
         int ns = SURFACES.length;
         int[][] sc = new int[ns][], sn = new int[ns][];
         for (int i = 0; i < ns; i++) {
@@ -167,10 +178,10 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         treeTex = GLUtil.cells(WorldTextures.treeWin, WorldTextures.TREE_GRID);
         cloudTex = GLUtil.texture(cloudData, WorldTextures.CLOUD_SIZE, false);
         leafAtlasTex = GLUtil.atlas(LeafAtlas.build(), LeafAtlas.W, LeafAtlas.H);
-        handATex = GLUtil.texture3D(handA, handNx, handNy, handNz, GLES30.GL_RGBA8, GLES20.GL_RGBA, true);
-        handBTex = GLUtil.texture3D(handB, handNx, handNy, handNz, GLES30.GL_RG8, GLES30.GL_RG, true);
-        handCTex = GLUtil.texture3D(handC, handNx, handNy, handNz, GLES30.GL_RGBA8, GLES20.GL_RGBA, true);
-        handA = handB = handC = null;
+        womanDTex = GLUtil.texture3D(woman.dist, woman.nx, woman.ny, woman.nz, GLES30.GL_R8, GLES30.GL_RED, true);
+        womanCTex = GLUtil.texture3D(woman.colour, woman.nx, woman.ny, woman.nz, GLES30.GL_RGBA8, GLES20.GL_RGBA, true);
+        womanBTex = GLUtil.texture3D(woman.skin, woman.nx, woman.ny, woman.nz, GLES30.GL_RGBA8, GLES20.GL_RGBA, false);
+        woman.dist = woman.colour = woman.skin = null;
         surfColTex = GLUtil.textureArray(surfCol, surfSize);    // repeating, point sampled
         surfNHTex = GLUtil.textureArray(surfNH, surfSize);
         surfCol = surfNH = null;
@@ -201,14 +212,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
 
     private float spawnFeet = Float.NaN;
 
-    /** Take out or put away the pickaxe. */
-    void toggleSword() {
-        arms.sword = !arms.sword;
-    }
-
-    boolean swordDrawn() {
-        return arms.sword;
-    }
 
     /** (Re)upload the packed species data whenever the library changes. */
     private void uploadTrees() {
@@ -247,7 +250,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     public void onSurfaceChanged(GL10 unused, int w, int h) {
         scrW = w;
         scrH = h;
-        int lh = LOW_RES_LINES;
+        int lh = lines;
         int lw = Math.max(1, Math.round(lh * (float) w / h));
         if (lw != fboW || lh != fboH || fbo == 0) createFbo(lw, lh);
     }
@@ -287,13 +290,14 @@ final class GameRenderer implements GLSurfaceView.Renderer {
                 try { Thread.sleep(30); } catch (InterruptedException ignored) { }
                 return;
             }
-            if (fbo == 0 && scrW > 0) createFbo(Math.max(1, Math.round(LOW_RES_LINES * (float) scrW / scrH)), LOW_RES_LINES);
+            if (fbo == 0 && scrW > 0) createFbo(Math.max(1, Math.round(lines * (float) scrW / scrH)), lines);
         }
         long now = System.nanoTime();
         float dt = Math.min(0.1f, (now - lastNanos) / 1e9f);
         lastNanos = now;
         time += dt;
         if (time > 3600f) time -= 3600f;
+        adaptResolution(dt);
 
         if (library != null && library.version != uploadedTreeVersion) uploadTrees();
         int slot = previewSlot;
@@ -302,16 +306,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             previewX = Double.NaN;
             if (streamer.ready(px, pz)) updatePlayer(dt);
             else input.consumeLook(look);
-            if (input.swingHeld) arms.startSwing();
-            arms.update(dt, look[0] * LOOK_SENS, -look[1] * LOOK_SENS, bobAmt, bobPhase);
-            if (arms.takeImpact() && !Float.isNaN(eyeY)) {               // the pickaxe comes down where you look
-                float cp = (float) Math.cos(pitch);
-                float dx = (float) Math.sin(yaw) * cp, dy = (float) Math.sin(pitch), dz = -(float) Math.cos(yaw) * cp;
-                if (Digging.strike(px, eyeY, pz, dx, dy, dz)) arms.bite();
-            }
+            animateCharacter(dt);
         } else input.consumeLook(look);
-        Digging.update(dt);
-        uploadDug();
         sky.update(dt);
         windX = (windX + sky.windSpeed * 0.92 * dt) % 2000.0;
         windZ = (windZ + sky.windSpeed * 0.38 * dt) % 2000.0;
@@ -351,7 +347,26 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform2f(u(sceneProg, "uTanHalf"), tanY * fboW / fboH, tanY);
         float camYaw = yaw, camPitch = pitch;
         double camX = px, camZ = pz;
-        float camY = eyeY + bobAmt * (float) Math.sin(bobPhase) * 0.045f;
+        float camY = eyeY;
+        boolean third = slot < 0 && !Float.isNaN(eyeY);
+        if (third) {
+            // behind her and a little above, over her right shoulder; pulled in where rock is in the way
+            double tx = px, ty = eyeY - EYE_HEIGHT + 1.55, tz = pz;
+            double cpt = Math.cos(pitch);
+            double fx = Math.sin(yaw) * cpt, fy = Math.sin(pitch), fz = -Math.cos(yaw) * cpt;
+            tx += Math.cos(yaw) * 0.36;
+            tz += Math.sin(yaw) * 0.36;
+            double want = 2.8, dist = 0.3;
+            while (dist < want) {
+                if (Voxels.distance(tx - fx * dist, ty - fy * dist, tz - fz * dist) < 0.3f) break;
+                dist += 0.1;
+            }
+            dist = Math.max(0.3, dist - 0.1);
+            camDist += (dist - camDist) * (dist < camDist ? 1f : Math.min(1f, dt * 4f));
+            camX = tx - fx * camDist;
+            camY = (float) (ty - fy * camDist);
+            camZ = tz - fz * camDist;
+        }
         float pvX = 0, pvY = 0, pvZ = 0;
         if (slot >= 0 && library != null) {
             float h = library.specs[slot].get(TreeSpec.HEIGHT);
@@ -383,34 +398,33 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(u(sceneProg, "uPitch"), camPitch);
         GLES20.glUniform4f(u(sceneProg, "uPreview"), pvX, pvY, pvZ, slot >= 0 ? slot : -1f);
         GLES20.glUniform1f(u(sceneProg, "uPreviewYaw"), previewYaw);
-        bindTex3D(11, handATex, "uHandA");
-        bindTex3D(12, handBTex, "uHandB");
-        bindTex3D(13, handCTex, "uHandC");
-        GLES20.glUniform3f(u(sceneProg, "uHandO"), handX0 - handCell * 0.5f, handY0 - handCell * 0.5f, handZ0 - handCell * 0.5f);
-        GLES20.glUniform3f(u(sceneProg, "uHandS"), handNx * handCell, handNy * handCell, handNz * handCell);
+        bindTex3D(11, womanDTex, "uWomanD");
+        bindTex3D(12, womanCTex, "uWomanC");
+        bindTex3D(13, womanBTex, "uWomanB");
         bindTexArray(14, surfColTex, "uSurfCol");
         bindTexArray(15, surfNHTex, "uSurfNH");
-        GLES20.glUniformMatrix3fv(u(sceneProg, "uArmRot"), 2, false, arms.rot, 0);
-        GLES20.glUniform3fv(u(sceneProg, "uArmPos"), 2, arms.pos, 0);
-        GLES20.glUniform4fv(u(sceneProg, "uFing"), 10, arms.fingers, 0);
-        GLES20.glUniform3f(u(sceneProg, "uSwordO"), arms.swordO[0], arms.swordO[1], arms.swordO[2]);
-        GLES20.glUniform3f(u(sceneProg, "uSwordB"), arms.swordB[0], arms.swordB[1], arms.swordB[2]);
-        GLES20.glUniform3f(u(sceneProg, "uSwordE"), arms.swordE[0], arms.swordE[1], arms.swordE[2]);
-        GLES20.glUniform1f(u(sceneProg, "uSwordShow"), arms.sword ? 1f : 0f);
-        int nClods = Digging.packClods(clodData, offX, offZ);
-        GLES20.glUniform4fv(u(sceneProg, "uClods"), Digging.MAX_CLODS, clodData, 0);
-        GLES20.glUniform1i(u(sceneProg, "uClodN"), nClods);
-        GLES20.glUniform1fv(u(sceneProg, "uFingK"), 10, arms.fingerK, 0);
-        GLES20.glUniform1f(u(sceneProg, "uArmShow"), slot < 0 ? 1f : 0f);
+        GLES20.glUniform1f(u(sceneProg, "uCharShow"), third ? 1f : 0f);
+        GLES20.glUniform1f(u(sceneProg, "uCamNear"), third ? (float) Math.max(0.0, camDist - 0.7) : 0f);
+        if (third) {
+            woman.pose(px, eyeY - EYE_HEIGHT, pz, charYaw, walkAmt, walkPhase, time, offX, offZ);
+            GLES20.glUniform4fv(u(sceneProg, "uSkin"), Woman.BONES * 3, woman.skinM, 0);
+            GLES20.glUniform4fv(u(sceneProg, "uBoneA"), Woman.BONES, woman.boneA, 0);
+            GLES20.glUniform4fv(u(sceneProg, "uBoneB"), Woman.BONES, woman.boneB, 0);
+            GLES20.glUniform4fv(u(sceneProg, "uCharSphere"), 1, woman.sphere, 0);
+            GLES20.glUniform3f(u(sceneProg, "uWomanMin"), woman.minX - woman.cell * 0.5f, woman.minY - woman.cell * 0.5f, woman.minZ - woman.cell * 0.5f);
+            GLES20.glUniform3f(u(sceneProg, "uWomanSize"), woman.nx * woman.cell, woman.ny * woman.cell, woman.nz * woman.cell);
+            GLES20.glUniform3f(u(sceneProg, "uWomanDims"), woman.nx, woman.ny, woman.nz);
+        }
         GLES20.glUniform3f(u(sceneProg, "uCam"), (float) (camX - offX), camY, (float) (camZ - offZ));
         GLES20.glUniform2f(u(sceneProg, "uCloudO"), (float) mod(px + windX, 2000.0), (float) mod(pz + windZ, 2000.0));
         GLES20.glUniform3fv(u(sceneProg, "uSunDir"), 1, sky.sunDir, 0);
-        GLES20.glUniform3fv(u(sceneProg, "uSkyTop"), 1, sky.skyTop, 0);
-        GLES20.glUniform3fv(u(sceneProg, "uSkyHor"), 1, sky.skyHor, 0);
+        // an alien sky: the blue turned toward teal overhead, the horizon toward rose and peach
+        GLES20.glUniform3fv(u(sceneProg, "uSkyTop"), 1, hueTurn(sky.skyTop, -0.95f, 1.15f), 0);
+        GLES20.glUniform3fv(u(sceneProg, "uSkyHor"), 1, hueTurn(sky.skyHor, 2.6f, 1.35f), 0);
         GLES20.glUniform3fv(u(sceneProg, "uSunCol"), 1, sky.sunCol, 0);
         GLES20.glUniform3fv(u(sceneProg, "uAmbient"), 1, sky.ambient, 0);
-        GLES20.glUniform3fv(u(sceneProg, "uFogCol"), 1, sky.fogCol, 0);
-        GLES20.glUniform3fv(u(sceneProg, "uMtnCol"), 1, sky.mtnCol, 0);
+        GLES20.glUniform3fv(u(sceneProg, "uFogCol"), 1, hueTurn(sky.fogCol, 2.6f, 1.25f), 0);
+        GLES20.glUniform3fv(u(sceneProg, "uMtnCol"), 1, hueTurn(sky.mtnCol, 2.2f, 1.3f), 0);
         GLES20.glUniform1f(u(sceneProg, "uFog"), sky.fogDensity);
         GLES20.glUniform1f(u(sceneProg, "uStars"), sky.stars);
         GLES20.glUniform1f(u(sceneProg, "uCover"), sky.cover);
@@ -482,48 +496,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         sunOn = sky.sunVis * edge * Math.max(0f, Math.min(1f, (float) y * 6f + 0.3f));
     }
 
-    private final float[] clodData = new float[Digging.MAX_CLODS * 4];
 
     /** Window start and length of a cell range, split where the window wraps: (start, len) pairs. */
     private static int[] segments(int a0, int a1, int n) {
         int len = Math.min(n, a1 - a0 + 1), s = Math.floorMod(a0, n);
         return s + len <= n ? new int[]{s, len} : new int[]{s, n - s, 0, len - (n - s)};
-    }
-
-    /** Re-upload the parts of the volume and the dirt mask that digging changed this frame. */
-    private void uploadDug() {
-        if (Digging.volDirty()) {
-            int[] b = Digging.dirtyVol;
-            final int NX = Voxels.NX, NY = Voxels.NY, NZ = Voxels.NZ;
-            int y0 = Math.max(0, b[1]), h = Math.min(NY - 1, b[4]) - y0 + 1;
-            int[] sx = segments(b[0], b[3], NX), sz = segments(b[2], b[5], NZ);
-            for (int i = 0; i < sx.length; i += 2)
-                for (int k = 0; k < sz.length; k += 2) {
-                    int x0 = sx[i], w = sx[i + 1], z0 = sz[k], d = sz[k + 1];
-                    byte[] data = new byte[w * h * d * 2];
-                    for (int z = 0; z < d; z++)
-                        for (int y = 0; y < h; y++)
-                            System.arraycopy(Voxels.vol, (((z0 + z) * NY + y0 + y) * NX + x0) * 2, data, ((z * h + y) * w) * 2, w * 2);
-                    GLUtil.subTexture3D(volTex, data, x0, y0, z0, w, h, d);
-                }
-        }
-        if (Digging.digDirty()) {
-            int[] b = Digging.dirtyDig;
-            final int S = WorldTextures.HEIGHT_SIZE;
-            int[] sx = segments(b[0], b[2], S), sz = segments(b[1], b[3], S);
-            for (int i = 0; i < sx.length; i += 2)
-                for (int k = 0; k < sz.length; k += 2) {
-                    int x0 = sx[i], w = sx[i + 1], z0 = sz[k], d = sz[k + 1];
-                    int[] data = new int[w * d];
-                    for (int z = 0; z < d; z++)
-                        for (int x = 0; x < w; x++) {
-                            int j = (z0 + z) * S + x0 + x;
-                            data[z * w + x] = WorldTextures.heightTexel(WorldTextures.hFloor[j], Digging.digWin[j]);
-                        }
-                    GLUtil.subTexture(heightTex, data, x0, z0, w, d);
-                }
-        }
-        Digging.clearDirty();
     }
 
     /** Queue chunks around the player and upload the ones that are ready (a few per frame). */
@@ -643,35 +620,42 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1i(u(sceneProg, name), unit);
     }
 
-    /** Read the voxel hands: header, then the two distance volumes and the colour volume. */
-    private void loadHands() {
-        try (java.io.DataInputStream in = new java.io.DataInputStream(
-                new java.util.zip.GZIPInputStream(assets.open("hands/hands.bin.gz"), 1 << 16))) {
-            byte[] h = new byte[28];
-            in.readFully(h);
-            ByteBuffer hb = ByteBuffer.wrap(h).order(ByteOrder.LITTLE_ENDIAN);
-            handNx = hb.getInt();
-            handNy = hb.getInt();
-            handNz = hb.getInt();
-            handCell = hb.getFloat();
-            handX0 = hb.getFloat();
-            handY0 = hb.getFloat();
-            handZ0 = hb.getFloat();
-            int n = handNx * handNy * handNz;
-            handA = readDirect(in, n * 4);
-            handB = readDirect(in, n * 2);
-            handC = readDirect(in, n * 4);
-        } catch (java.io.IOException e) {
-            throw new IllegalStateException("missing hands/hands.bin.gz", e);
+    /**
+     * Keep it smooth: every second or so, render fewer lines if frames are slow (under ~30 fps) and
+     * more again when there is room, between 120 and 240 lines (the image always fills the screen).
+     */
+    private void adaptResolution(float dt) {
+        frameAcc += dt;
+        if (++frameCount < 40) return;
+        float avg = frameAcc / frameCount;
+        frameAcc = 0f;
+        frameCount = 0;
+        int want = lines;
+        if (avg > 1f / 30f) want = Math.max(120, lines - 20);
+        else if (avg < 1f / 50f) want = Math.min(LOW_RES_LINES, lines + 20);
+        if (want != lines && scrW > 0) {
+            lines = want;
+            createFbo(Math.max(1, Math.round(lines * (float) scrW / scrH)), lines);
         }
     }
 
-    private static ByteBuffer readDirect(java.io.DataInputStream in, int n) throws java.io.IOException {
-        byte[] b = new byte[n];
-        in.readFully(b);
-        ByteBuffer bb = ByteBuffer.allocateDirect(n).order(ByteOrder.nativeOrder());
-        bb.put(b).position(0);
-        return bb;
+    /** Her heading follows where she walks; the stride follows how far she has gone. */
+    private void animateCharacter(float dt) {
+        if (Double.isNaN(lastPx)) { lastPx = px; lastPz = pz; }
+        double vx = (px - lastPx) / Math.max(dt, 1e-4), vz = (pz - lastPz) / Math.max(dt, 1e-4);
+        lastPx = px;
+        lastPz = pz;
+        float speed = (float) Math.sqrt(vx * vx + vz * vz);
+        if (speed > 0.3f) {
+            float want = (float) Math.atan2(vx, -vz);
+            float dy = want - charYaw;
+            while (dy > Math.PI) dy -= (float) (Math.PI * 2);
+            while (dy < -Math.PI) dy += (float) (Math.PI * 2);
+            charYaw += dy * Math.min(1f, dt * 9f);
+        }
+        walkAmt += (Math.min(1f, speed / WALK_SPEED) - walkAmt) * Math.min(1f, dt * 8f);
+        walkPhase += dt * speed / 1.45f * (float) Math.PI;
+        if (walkPhase > 1000f) walkPhase -= (float) (Math.PI * 200);
     }
 
     private void bindTexArray(int unit, int tex, String name) {
@@ -700,6 +684,20 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             map.put(name, v);
         }
         return v;
+    }
+
+    /** Turn a colour round the hue circle (about the grey axis) and push its saturation. */
+    private static float[] hueTurn(float[] c, float a, float sat) {
+        double k = 0.5773503, ca = Math.cos(a), sa = Math.sin(a), d = k * (c[0] + c[1] + c[2]);
+        double cx = k * (c[1] - c[2]), cy = k * (c[2] - c[0]), cz = k * (c[0] - c[1]);   // cross(k, c)
+        float[] o = new float[3];
+        float l = 0.3f * c[0] + 0.59f * c[1] + 0.11f * c[2];
+        for (int i = 0; i < 3; i++) {
+            double cr = i == 0 ? cx : (i == 1 ? cy : cz);
+            double v = c[i] * ca + cr * sa + k * d * (1 - ca);
+            o[i] = (float) Math.max(0.0, Math.min(1.5, l + (Math.max(0.0, v) - l) * sat));
+        }
+        return o;
     }
 
     private static double mod(double a, double m) {
