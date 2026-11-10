@@ -8,12 +8,11 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * The land is 32 km across and never repeats: every generator works from absolute world
  * coordinates, seeded by position, so any chunk can be made at any time, in any order, on any
- * thread, and always comes out the same. The hand-made heart of it sits at the centre: the village
- * of Hollowspire at (128, 128) with its cobbled north-south road (which runs on as a track the whole
- * length of the land), an east-west street and a round plaza with a fountain; Hollow Hill and its
- * cave to the east; the standing stones on their mound at (36, 228); a river near z = 30 under a
- * stone bridge. Outside it the wilds go on: rolling hills and high ground, forests (broadleaf and
- * pine), more rivers every ~1.4 km, boulders,
+ * thread, and always comes out the same. At the centre stands an alien town (see Town) on a flat
+ * plateau at (128, 128), its streets paved with hexagonal flagstones; the north road runs out of it
+ * as a track the whole length of the land, and a river near z = 30 passes under a stone bridge.
+ * Outside it the wilds go on: rolling hills and high ground, forests, more rivers every ~1.4 km,
+ * boulders,
  * fallen logs, cairns. Mountains wall the land in at the edges.
  *
  * The land is drawn Mode 7 style: a heightmap traced per pixel with textures on top. The GPU only
@@ -293,7 +292,6 @@ final class WorldTextures {
     static final float BASE = 16f;
     static final float WATER_LEVEL = 4f;
     static final float VILLAGE_H = 10f;
-    static final float STONES_X = 36f, STONES_Z = 228f;
 
     /** Open-air ground height per window sample (quantised to the 8 bits the GPU sees). */
     static final float[] hFloor = new float[HEIGHT_SIZE * HEIGHT_SIZE];
@@ -339,19 +337,11 @@ final class WorldTextures {
         float low = 5f + (n[0].at(u, v) * 15f + n[1].at(u, v) * 8f) * A;
         float h = low + (n[2].at(u, v) * 3f + n[3].at(u, v) * 0.9f) * (0.6f + 0.4f * A) + n[4].at(u, v) * 0.25f;
 
-        // standing-stone mound
-        float sdx = wx - STONES_X, sdz = wz - STONES_Z;
-        h += 6f * (float) Math.exp(-(sdx * sdx + sdz * sdz) / (16f * 16f));
-
-        // village plateau
+        // the town's plateau
         float vx = wx - 128f, vz = wz - 128f;
         float dv = (float) Math.pow(Math.pow(Math.abs(vx), 3) + Math.pow(Math.abs(vz), 3), 1.0 / 3.0);   // rounded square
-        float wv = 1f - smooth(70f, 100f, dv);
-        if (wv > 0f) h = lerp(h, VILLAGE_H + (n[3].at(u, v) - 0.5f) * 0.3f * smooth(30f, 64f, dv), wv);
-
-        // Hollow Hill, east of the village, which holds the cave
-        float hx = wx - Cave.HILL_X, hz = wz - Cave.HILL_Z;
-        h += 19f * (float) Math.exp(-(hx * hx + hz * hz) / (30f * 30f));
+        float wv = 1f - smooth(112f, 150f, dv);
+        if (wv > 0f) h = lerp(h, VILLAGE_H, wv);           // dead flat: the buildings stand on it
 
         // mountains wall the land in at its edges
         float edge = Math.max(Math.abs(wx - CENTRE_X), Math.abs(wz - CENTRE_Z));
@@ -361,7 +351,7 @@ final class WorldTextures {
         float dx = Math.abs(wx - 128f), roadH = h;
         if (dx < 11f) {
             float roadLow = 5f + (n[0].at(0.5f, v) * 15f + n[1].at(0.5f, v) * 8f) * hilliness(128f, wz);
-            float wvRoad = 1f - smooth(70f, 100f, Math.abs(wz - 128f));
+            float wvRoad = 1f - smooth(112f, 150f, Math.abs(wz - 128f));
             roadH = lerp(roadLow, VILLAGE_H, wvRoad);
             h = lerp(h, roadH, (1f - smooth(3f, 11f, dx)));
         }
@@ -600,8 +590,6 @@ final class WorldTextures {
                 }
             }
         // standing stones on the rise west of the north road
-        if (Math.abs(STONES_X * PPM - (gx0 + N / 2)) < N / 2 + 120 && Math.abs(STONES_Z * PPM - (gy0 + N / 2)) < N / 2 + 120)
-            stoneCircle(cv, STONES_X, STONES_Z, 7.5f, 11, f1, new Random(555));
         cv.curMat = M_WOOD;
         for (int dz = -1; dz <= 1; dz++)                          // fallen logs and stumps
             for (int dx = -1; dx <= 1; dx++) {
@@ -658,8 +646,6 @@ final class WorldTextures {
                 }
             }
         cv.curMat = M_STONE;
-        if (Math.abs(141 * PPM - (gx0 + N / 2)) < N / 2 + 40 && Math.abs(113 * PPM - (gy0 + N / 2)) < N / 2 + 40)
-            well(cv, (int) (141 * PPM), (int) (113 * PPM), 1.25f * PPM, 0.80f * PPM, f1);
 
         // ---- pack
         for (int y = 0; y < N; y++)
@@ -757,42 +743,51 @@ final class WorldTextures {
 
         // ---- roads
         float dx = wrapD(wx, 128f), dz = wrapD(wz, 128f);
-        float sd = Math.abs(dx), sdz = Math.abs(dz);
+        float sd = Math.abs(dx);
         float edgeN = (m2.at(u * 2f, v * 2f) - 0.5f) * 0.8f;
-        float townN = smooth(60f, 68f, wz) * (1f - smooth(188f, 196f, wz));   // N-S street paved
-        float townE = smooth(60f, 68f, wx) * (1f - smooth(188f, 196f, wx));   // E-W street paved
-        float plaza = (float) Math.sqrt(dx * dx + dz * dz);
+        float townN = Town.inTown(wx, wz) ? 1f : 0f;
         boolean paved = false;
         float roadA = 0f;
 
-        // paved streets with curb stones, and the round plaza
-        float halfN = 4.6f, halfE = 4.2f;
-        boolean onN = sd < halfN + 0.35f && townN > 0.5f;
-        boolean onE = sdz < halfE + 0.35f && townE > 0.5f;
-        boolean onP = plaza < 15.5f;
-        if (onN || onE || onP) {
-            float wear = smooth(0.6f, 0.0f, Math.min(Math.abs(sd - 1.6f), Math.abs(sd + 0f - 1.6f))) * (onN ? 1f : 0f);
-            float[] c = cobble(wx, wz, 0.36f, fine, h, wear * 0.6f);
-            // the stones' own relief comes from the cobblestone texture's height map
-            dh = 0.02f;
-            boolean curb = (onN && !onP && !(sdz < halfE + 0.35f) && sd > halfN)
-                    || (onE && !onP && !(sd < halfN + 0.35f) && sdz > halfE)
-                    || (onP && plaza > 15.0f && !(sd < halfN + 0.35f) && !(sdz < halfE + 0.35f));
-            if (curb) {
-                int seg = (int) Math.floor((onN ? wz : (onE ? wx : (float) Math.atan2(dz, dx) * 15f)) / 0.9f);
-                float cl = 0.78f + 0.15f * hash(seg, 3) + 0.06f * (h - 0.5f);
-                c = new float[]{0.60f * cl, 0.59f * cl, 0.56f * cl};
-                dh = 0.16f;
+        // ---- the alien town: hexagonal flagstones on every street and square, smooth pale tiles
+        // where the buildings stand (their floors), a glowing inlay ring round the plaza
+        if (townN > 0.5f) {
+            float hs = 0.62f;                                        // hex flagstones
+            float qx = wx / (hs * 1.7320508f), qz = wz / hs - qx * 0.5f;
+            int ix = (int) Math.floor(qx), iz = (int) Math.floor(qz);
+            float fx = qx - ix, fz = qz - iz;
+            if (fx + fz > 1f) { ix++; iz++; fx = 1f - fx; fz = 1f - fz; }
+            int cell = (int) Math.floor(qx + 0.5f) * 7919 + (int) Math.floor(qz + 0.5f) * 104729;
+            float jt = hash(cell, 5);
+            float edgeH = Math.min(Math.min(fx, fz), Math.abs(1f - fx - fz));
+            float l = 0.80f + 0.18f * jt + 0.08f * (fine - 0.5f);
+            r = 0.58f * l; g = 0.56f * l; b = 0.60f * l;
+            if (Math.abs(((qx + qz * 0.5f) % 1f + 1f) % 1f - 0.5f) < 0.04f || Math.abs((qz % 1f + 1f) % 1f) < 0.05f) {
+                r *= 0.6f; g *= 0.6f; b *= 0.62f;                    // joints
             }
-            r = c[0]; g = c[1]; b = c[2];
+            int k = Town.lotAt(wx, wz);
+            if (k >= 0 && Town.type[k] >= 1 && Town.type[k] <= 4) {
+                int li = k % Town.N, lj = k / Town.N;
+                float lx = wx - (Town.X0 + (li + 0.5f) * Town.LOT), lz = wz - (Town.Z0 + (lj + 0.5f) * Town.LOT);
+                float bx, bz;
+                switch (Town.rot[k]) {
+                    case 1: bx = -lz; bz = lx; break;
+                    case 2: bx = -lx; bz = -lz; break;
+                    case 3: bx = lz; bz = -lx; break;
+                    default: bx = lx; bz = lz;
+                }
+                if (Town.cavity(Town.type[k], Town.size[k], Town.tall[k], bx, 0.05f, bz) < 0.1f) {
+                    float tl = 0.90f + 0.08f * hash((int) Math.floor(wx * 1.4f), (int) Math.floor(wz * 1.4f));
+                    r = 0.74f * tl; g = 0.72f * tl; b = 0.78f * tl;   // the room's floor
+                    if (((int) Math.floor(wx * 1.4f) + (int) Math.floor(wz * 1.4f) & 1) == 0) { r *= 0.94f; g *= 0.94f; b *= 0.94f; }
+                }
+            }
+            float pd = (float) Math.hypot(wx - Town.CX, wz - Town.CZ);
+            if (Math.abs(pd - 9f) < 0.25f || Math.abs(pd - 11f) < 0.12f) { r = 0.35f; g = 0.95f; b = 0.85f; }   // inlay
+            dh = 0.02f;
             mat = M_STONE;
             paved = true;
             roadA = 1f;
-        } else {
-            // soft shadow of the curb onto the verge
-            float near = Math.min(townN > 0.5f ? sd - (halfN + 0.35f) : 9f, townE > 0.5f ? sdz - (halfE + 0.35f) : 9f);
-            near = Math.min(near, plaza - 15.5f);
-            if (near < 0.4f) { float s = 0.75f + 0.25f * (near / 0.4f); r *= s; g *= s; b *= s; }
         }
         // dirt cart track outside town (two ruts with a grassy crown)
         if (!paved) {
@@ -857,33 +852,6 @@ final class WorldTextures {
         }
         // shadow of the bridge on the water either side
         if (!bridge && sd < 5.2f && sd >= 4.2f && rd < rhw && dx > 0) { r *= 0.6f; g *= 0.6f; b *= 0.6f; a = Math.min(1f, a + 0.3f); }
-
-        // ---- plaza fountain
-        if (plaza < 4.0f) {
-            busy = true;
-            if (plaza > 3.2f) {                                    // basin rim
-                int st = (int) Math.floor((Math.atan2(dz, dx) + Math.PI) / TAU * 26);
-                float sf = (float) ((Math.atan2(dz, dx) + Math.PI) / TAU * 26 - st);
-                float rl = 0.80f + 0.18f * hash(st, 9) - 0.25f * (dx + dz) / 4f + 0.05f * (h - 0.5f);
-                if (sf < 0.08f) rl *= 0.6f;
-                r = 0.66f * rl; g = 0.63f * rl; b = 0.58f * rl;
-                a = 1f;
-                dh = 0.55f;
-                mat = M_STONE;
-            } else if (plaza < 0.55f) {                            // central column
-                float rl = 0.75f - 0.4f * (dx + dz) / 0.55f;
-                r = 0.62f * rl; g = 0.60f * rl; b = 0.56f * rl;
-                a = 1f;
-                dh = 1.6f;
-                mat = M_STONE;
-            } else {
-                float ripple = 0.5f + 0.5f * (float) Math.sin(plaza * 9f);
-                r = 0.12f + 0.03f * ripple; g = 0.17f + 0.03f * ripple; b = 0.17f + 0.03f * ripple;
-                a = 0.15f;
-                dh = 0.25f;                                        // water surface inside the basin
-                mat = M_WATER;
-            }
-        }
 
         if (paved || roadA > 0.5f || a < 1f) busy = true;
         out[0] = r; out[1] = g; out[2] = b; out[3] = a;

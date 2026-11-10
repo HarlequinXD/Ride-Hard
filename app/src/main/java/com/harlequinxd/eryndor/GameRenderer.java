@@ -76,6 +76,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     // the player: one voxel woman rigged to a skeleton (tools/build_woman.py), seen from behind
     private final Woman woman = new Woman();
     private int womanDTex, womanCTex, womanBTex;
+    private int townTex;
     private float charYaw = 0f, walkPhase, walkAmt;
     private double lastPx = Double.NaN, lastPz;
     private double camDist = 2.8;
@@ -173,6 +174,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         matTex = GLUtil.luminance(WorldTextures.matWin, WorldTextures.GROUND_SIZE, true);
         fernTex = GLUtil.cells(WorldTextures.fernWin, WorldTextures.FERN_GRID);
         treeTex = GLUtil.cells(WorldTextures.treeWin, WorldTextures.TREE_GRID);
+        townTex = GLUtil.cells(Town.texture(), Town.N);
         cloudTex = GLUtil.texture(cloudData, WorldTextures.CLOUD_SIZE, false);
         leafAtlasTex = GLUtil.atlas(LeafAtlas.build(), LeafAtlas.W, LeafAtlas.H);
         womanDTex = GLUtil.texture3D(woman.dist, woman.nx, woman.ny, woman.nz, GLES30.GL_R8, GLES30.GL_RED, true);
@@ -350,7 +352,9 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             double want = 2.8, dist = 0.3;
             while (dist < want) {
                 double qx = tx - fx * dist, qz = tz - fz * dist;
-                if (ty - fy * dist - (WorldTextures.floorAt(qx, qz) + WorldTextures.detailAt(qx, qz)) < 0.3) break;
+                double qy = ty - fy * dist;
+                if (qy - (WorldTextures.floorAt(qx, qz) + WorldTextures.detailAt(qx, qz)) < 0.3) break;
+                if (Town.dist(qx, qy, qz) < 0.3f) break;                // nor through the town's walls
                 dist += 0.1;
             }
             dist = Math.max(0.3, dist - 0.1);
@@ -390,12 +394,18 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(u(sceneProg, "uPitch"), camPitch);
         GLES20.glUniform4f(u(sceneProg, "uPreview"), pvX, pvY, pvZ, slot >= 0 ? slot : -1f);
         GLES20.glUniform1f(u(sceneProg, "uPreviewYaw"), previewYaw);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE4);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, townTex);
+        GLES20.glUniform1i(u(sceneProg, "uTown"), 4);
+        GLES20.glUniform3f(u(sceneProg, "uTownO"), (float) (Town.X0 - offX), (float) (Town.Z0 - offZ), Town.GROUND);
+        GLES20.glUniform3f(u(sceneProg, "uPlayer"), (float) (px - offX), Float.isNaN(eyeY) ? 0f : eyeY - EYE_HEIGHT, (float) (pz - offZ));
         bindTex3D(11, womanDTex, "uWomanD");
         bindTex3D(12, womanCTex, "uWomanC");
         bindTex3D(13, womanBTex, "uWomanB");
         bindTexArray(14, surfColTex, "uSurfCol");
         bindTexArray(15, surfNHTex, "uSurfNH");
-        GLES20.glUniform1f(u(sceneProg, "uCharShow"), third ? 1f : 0f);
+        // (when a wall pins the camera right behind her, she steps out of the way: a first-person view)
+        GLES20.glUniform1f(u(sceneProg, "uCharShow"), third && camDist > 0.8 ? 1f : 0f);
         GLES20.glUniform1f(u(sceneProg, "uCamNear"), third ? (float) Math.max(0.0, camDist - 0.7) : 0f);
         if (third) {
             woman.pose(px, eyeY - EYE_HEIGHT, pz, charYaw, walkAmt, walkPhase, time, offX, offZ);
@@ -573,6 +583,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         float ahead = groundAt(ax, az);
         // step up anything up to a stair's height (tunnel lips, rocks, banks); taller is a wall
         if (ahead - here > MAX_STEP_UP) return;
+        // the town's walls are solid (doorways are open, the doors slide aside as she nears them)
+        if (Town.dist(ax, ahead + 0.4, az) < 0.25f || Town.dist(ax, ahead + 1.4, az) < 0.25f) return;
         float[] tr = WorldTextures.trunkNear(ax, az);           // tree trunks are solid
         TreeLibrary lib = library;
         if (tr != null && lib != null) {

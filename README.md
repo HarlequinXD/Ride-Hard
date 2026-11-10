@@ -1,6 +1,6 @@
 # Chronicles of Eryndor: Hollowspire
 
-A third-person exploration game on an alien world, for Android and PC. First milestone: the world around the village of
+A third-person exploration game on an alien world, for Android and PC. First milestone: the world around the alien town of
 Hollowspire.
 
 - **An alien world**: the land is an alien planet. Meadows grow indigo and violet turf with
@@ -43,8 +43,8 @@ Hollowspire.
   cairns and molehills, and mountains at the edges.
 - **Fine relief**: a detail heightmap (8 texels per metre), texel for texel with the ground colours,
   lifts lumpy hummocks, dense grass, shrubs, ferns, fallen logs, stumps, cairns, molehills,
-  boulders, pebbles, grass tufts, flowers, cobbles, curbs, bridge parapets, the
-  fountain, the well and the standing stones. It is ray-marched per screen pixel with smooth
+  boulders, pebbles, grass tufts, flowers, cobbles, curbs, bridge parapets and
+  the town's hex flagstones. It is ray-marched per screen pixel with smooth
   (bilinear) heights, so detail is pixel-perfect columns of colour rather than cubes, and fades out
   past about 70 m. Big stones, rocks and shrubs block movement; grass and pebbles don't.
 - **Everything per pixel**: surface texture is computed for each screen pixel at the exact point
@@ -116,12 +116,15 @@ Hollowspire.
   ground.
 - **Loading screen**: title, a real progress bar and the stage being built (shaping the land,
   growing the trees, raising the land around you); the first 512 m are generated on all cores.
-- **The world**: a cobbled village with a plaza fountain and a well, a cart track running north to
-  a stone bridge over a winding river, meadows with wildflowers, shrubs and mossy boulders, a
-  ring of standing stones on a mound, fairy rings, and Hollow Hill to the east with a tunnel
-  leading to a domed chamber (with a skylight), at the heart of the 32 km wilds.
-- **Caves**: daylight fades as you go in, rain stops, and a warm lantern lights the way (it also
-  comes on at night). You collide with walls and the ceiling.
+- **The world**: an alien town on a paved plateau, a cart track running north to a stone bridge
+  over a winding river, meadows with wildflowers, shrubs and mossy boulders, and fairy rings, at
+  the heart of the 32 km wilds.
+- **The town**: a 15 x 15 grid of 14 m lots split by two boulevards, with a black-glass monument
+  and a floating orb in the central plaza. Buildings are pearly alien shells (domes, ribbed
+  spiral towers, clustered pods and long halls) drawn per pixel as signed distance fields, with
+  round windows that glow at night. Every building can be entered: each has a porch, a glowing
+  door frame and a two-panel door with glyphs that slides open as you walk up. Inside are pale
+  rooms lit by glowing wall strips, with tiled floors. Walls block you and the camera.
 - **Sky (Mode 7)**: a drifting cloud plane with moving cloud shadows, snow-capped mountains, the
   Hollowspire tower to the north (its window glows at night), sun, moon and stars. The river and
   fountain reflect it.
@@ -166,7 +169,7 @@ over old ones. Locally: `gradle assembleDebug` (Gradle 8.14, JDK 17, Android SDK
 | `GameRenderer.java` | Player movement, collision, eye height, low-res target, uniforms |
 | `SkyState.java` | Time of day, sun, sky colours, weather blending, lightning |
 | `WorldTextures.java` | Ground colour, layered heightmap and cloud textures (pure Java) |
-| `Cave.java` | Hollow Hill cave layout (tunnel path, chamber) |
+| `Town.java` | Town lots, building shapes and collision (mirrored in the shader) |
 | `ControlsView.java` | Loading screen, title card, touch pad, swipe look, HUD buttons |
 | `Loading.java` | World-building progress shared with the loading screen |
 | `assets/shaders/scene.frag` | Heightmap ray-march, lighting, water, sky, weather, dither |
