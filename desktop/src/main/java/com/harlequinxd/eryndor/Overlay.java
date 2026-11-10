@@ -18,7 +18,6 @@ import java.util.Locale;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 import org.lwjgl.opengl.GL13;
-import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 
 /**
@@ -81,9 +80,8 @@ final class Overlay {
         GL13.glActiveTexture(GL13.GL_TEXTURE0);
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, tex);
         GL20.glUniform1i(GL20.glGetUniformLocation(prog, "uTex"), 0);
-        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
-        GL20.glVertexAttribPointer(0, 2, GL11.GL_FLOAT, false, 0, quad);
-        GL20.glEnableVertexAttribArray(0);
+        android.opengl.GLES20.glVertexAttribPointer(0, 2, GL11.GL_FLOAT, false, 0, quad);   // core-safe (VBO + VAO)
+        android.opengl.GLES20.glEnableVertexAttribArray(0);
         GL11.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
         GL11.glDisable(GL11.GL_BLEND);
     }

@@ -9,12 +9,14 @@ import java.util.Arrays;
 
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
+import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL33;
 
 /**
  * Desktop stand-in for android.opengl.GLES20: the calls the game makes, forwarded to desktop
- * OpenGL 3.3 (compatibility profile) through LWJGL. Shaders written for GLSL ES 3.00 get their
+ * OpenGL 3.3 (core profile) through LWJGL. Shaders written for GLSL ES 3.00 get their
  * version line swapped for desktop GLSL 3.30, which accepts the same language.
  */
 public class GLES20 {
@@ -88,6 +90,15 @@ public class GLES20 {
 
     public static void glTexImage2D(int target, int level, int internalFormat, int w, int h, int border,
                                     int format, int type, Buffer pixels) {
+        if (format == GL_LUMINANCE) {
+            // core OpenGL has no luminance textures: store one red channel and read it back as grey
+            internalFormat = GL30.GL_R8;
+            format = GL11.GL_RED;
+            GL11.glTexParameteriv(target, GL33.GL_TEXTURE_SWIZZLE_RGBA,
+                    new int[]{GL11.GL_RED, GL11.GL_RED, GL11.GL_RED, GL11.GL_ONE});
+        } else if (internalFormat == GL_RGBA && type == GL_UNSIGNED_BYTE) {
+            internalFormat = GL11.GL_RGBA8;
+        }
         if (pixels == null) {
             GL11.glTexImage2D(target, level, internalFormat, w, h, border, format, type, (ByteBuffer) null);
         } else if (pixels instanceof FloatBuffer) {
@@ -172,16 +183,37 @@ public class GLES20 {
         GL20.glUniformMatrix3fv(loc, transpose, Arrays.copyOfRange(v, offset, offset + count * 9));
     }
 
-    // ---- vertex arrays (client-side arrays are fine in the compatibility profile)
-    public static void glEnableVertexAttribArray(int index) { GL20.glEnableVertexAttribArray(index); }
+    // ---- vertex arrays: core OpenGL can't draw from client memory, so each attribute's data goes
+    //      into a vertex buffer (re-uploaded only when a different buffer is passed), inside one VAO
+    private static int vao;
+    private static final int[] vbo = new int[16];
+    private static final Buffer[] vboSource = new Buffer[16];
+
+    /** Bind the shared vertex array object (core OpenGL draws nothing without one). */
+    public static void ensureVao() {
+        if (vao == 0) vao = GL30.glGenVertexArrays();
+        GL30.glBindVertexArray(vao);
+    }
+
+    public static void glEnableVertexAttribArray(int index) {
+        ensureVao();
+        GL20.glEnableVertexAttribArray(index);
+    }
 
     public static void glVertexAttribPointer(int index, int size, int type, boolean normalized, int stride, Buffer ptr) {
-        org.lwjgl.opengl.GL15.glBindBuffer(org.lwjgl.opengl.GL15.GL_ARRAY_BUFFER, 0);
-        if (ptr instanceof FloatBuffer) {
-            GL20.glVertexAttribPointer(index, size, type, normalized, stride, direct((FloatBuffer) ptr));
-        } else {
-            GL20.glVertexAttribPointer(index, size, type, normalized, stride, direct((ByteBuffer) ptr));
+        ensureVao();
+        if (vbo[index] == 0) vbo[index] = GL15.glGenBuffers();
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, vbo[index]);
+        if (vboSource[index] != ptr) {
+            if (ptr instanceof FloatBuffer) {
+                GL15.glBufferData(GL15.GL_ARRAY_BUFFER, direct((FloatBuffer) ptr), GL15.GL_STATIC_DRAW);
+            } else {
+                GL15.glBufferData(GL15.GL_ARRAY_BUFFER, direct((ByteBuffer) ptr), GL15.GL_STATIC_DRAW);
+            }
+            vboSource[index] = ptr;
         }
+        GL20.glVertexAttribPointer(index, size, type, normalized, stride, 0L);
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
     }
 
     // ---- helpers

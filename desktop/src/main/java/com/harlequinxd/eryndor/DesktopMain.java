@@ -44,6 +44,28 @@ public final class DesktopMain {
     private final boolean[] padPrev = new boolean[GLFW_GAMEPAD_BUTTON_LAST + 1];
     private final GLFWGamepadState pad = GLFWGamepadState.create();
     private long readyAt;
+    // ERYNDOR_SHOTS=<folder> saves a screenshot every 5 s (for testing)
+    private final String shotDir = System.getenv("ERYNDOR_SHOTS");
+    private long nextShot;
+    private int shotIndex;
+
+    private void screenshot(File f) {
+        java.nio.ByteBuffer px = org.lwjgl.BufferUtils.createByteBuffer(fbW * fbH * 4);
+        org.lwjgl.opengl.GL11.glReadPixels(0, 0, fbW, fbH, org.lwjgl.opengl.GL11.GL_RGBA, org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE, px);
+        java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(fbW, fbH, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < fbH; y++) {
+            for (int x = 0; x < fbW; x++) {
+                int i = ((fbH - 1 - y) * fbW + x) * 4;
+                img.setRGB(x, y, (px.get(i) & 255) << 16 | (px.get(i + 1) & 255) << 8 | (px.get(i + 2) & 255));
+            }
+        }
+        try {
+            javax.imageio.ImageIO.write(img, "png", f);
+            System.err.println("screenshot " + f + " glError " + org.lwjgl.opengl.GL11.glGetError());
+        } catch (java.io.IOException e) {
+            e.printStackTrace();
+        }
+    }
 
     private DesktopMain(File dataDir) {
         this.dataDir = dataDir;
@@ -96,6 +118,9 @@ public final class DesktopMain {
         glfwDefaultWindowHints();
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        // core profile, the same everywhere (the GL stand-ins avoid everything core removed)
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         window = glfwCreateWindow(winW, winH, TITLE, MemoryUtil.NULL, MemoryUtil.NULL);
@@ -111,6 +136,7 @@ public final class DesktopMain {
         glfwMakeContextCurrent(window);
         glfwSwapInterval(1);
         GL.createCapabilities();
+        android.opengl.GLES20.ensureVao();
         System.err.println("OpenGL " + org.lwjgl.opengl.GL11.glGetString(org.lwjgl.opengl.GL11.GL_VERSION)
                 + " on " + org.lwjgl.opengl.GL11.glGetString(org.lwjgl.opengl.GL11.GL_RENDERER));
 
@@ -154,6 +180,10 @@ public final class DesktopMain {
             renderer.onDrawFrame(null);
             if (sky.worldReady && readyAt == 0) readyAt = System.currentTimeMillis();
             overlay.draw(fbW, fbH, state());
+            if (shotDir != null && System.currentTimeMillis() >= nextShot) {
+                screenshot(new File(shotDir, String.format("shot_%03d.png", shotIndex++)));
+                nextShot = System.currentTimeMillis() + 5000;
+            }
             glfwSwapBuffers(window);
         }
         glfwDestroyWindow(window);
