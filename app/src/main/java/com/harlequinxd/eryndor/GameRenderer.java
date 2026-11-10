@@ -32,7 +32,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private static final float FOV_Y = (float) Math.toRadians(68);
     private static final float EYE_HEIGHT = 1.68f;
     private static final float MAX_STEP_UP = 0.55f;     // tallest step the player climbs without jumping
-    private static final float MIN_HEADROOM = 1.95f;
     private static final float WALK_SPEED = 4.2f;      // m/s at full stick
     private static final float LOOK_SENS = 0.0065f;    // radians per dp
 
@@ -70,7 +69,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     /** Streams the world in 32 m chunks around the player (the GPU holds a window of it). */
     private final ChunkStreamer streamer = new ChunkStreamer();
     private final java.util.ArrayList<WorldTextures.Chunk2D> fresh2 = new java.util.ArrayList<>();
-    private final java.util.ArrayList<Voxels.VolChunk> freshV = new java.util.ArrayList<>();
     volatile TreeLibrary library;
     private int treePrimTex, treeCellTex, treeIdxTex, leafAtlasTex, uploadedTreeVersion = -1;
     // first-person arms: colour / normal / height sheets (decoded off the GL thread)
@@ -82,7 +80,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private double lastPx = Double.NaN, lastPz;
     private double camDist = 2.8;
     // terrain volume (tunnels, caves, overhangs): 3D RG8, distance + sky openness
-    private int volTex;
     // ground texture sets, one array layer each (order = layer index in scene.frag):
     // colour, and normal map + height packed together; tiling, point sampled
     static final String[] SURFACES = {"grass", "cobble", "dirt", "rock", "forest", "gravel", "sand", "snow",
@@ -168,7 +165,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         sceneProg = GLUtil.program(vs, GLUtil.asset(assets, "shaders/scene.frag"));
         blitProg = GLUtil.program(vs, GLUtil.asset(assets, "shaders/blit.frag"));
         Loading.set("Uploading the land", 0.90f);
-        streamer.drain(null, null, 1 << 20);                     // anything finished since loading
+        streamer.drain(null, 1 << 20);                     // anything finished since loading
         groundTex = GLUtil.texture(WorldTextures.groundWin, WorldTextures.GROUND_SIZE, true);    // point sampled
         heightTex = GLUtil.texture(WorldTextures.heightTexture(), WorldTextures.HEIGHT_SIZE, false, true);
         Loading.set("Uploading the fine relief", 0.94f);
@@ -185,9 +182,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         surfColTex = GLUtil.textureArray(surfCol, surfSize);    // repeating, point sampled
         surfNHTex = GLUtil.textureArray(surfNH, surfSize);
         surfCol = surfNH = null;
-        java.nio.ByteBuffer vb = ByteBuffer.allocateDirect(Voxels.vol.length).order(ByteOrder.nativeOrder());
-        vb.put(Voxels.vol).position(0);
-        volTex = GLUtil.texture3D(vb, Voxels.NX, Voxels.NY, Voxels.NZ);
         uploadTrees();
         Loading.set("Lighting the lanterns", 0.99f);
         eyeY = Float.isNaN(spawnFeet) ? Float.NaN : spawnFeet + EYE_HEIGHT;
@@ -328,9 +322,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE3);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, detailTex);
         GLES20.glUniform1i(u(sceneProg, "uDetail"), 3);
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE4);
-        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, volTex);
-        GLES20.glUniform1i(u(sceneProg, "uVol"), 4);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE5);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, matTex);
         GLES20.glUniform1i(u(sceneProg, "uMat"), 5);
@@ -358,7 +349,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             tz += Math.sin(yaw) * 0.36;
             double want = 2.8, dist = 0.3;
             while (dist < want) {
-                if (Voxels.distance(tx - fx * dist, ty - fy * dist, tz - fz * dist) < 0.3f) break;
+                double qx = tx - fx * dist, qz = tz - fz * dist;
+                if (ty - fy * dist - (WorldTextures.floorAt(qx, qz) + WorldTextures.detailAt(qx, qz)) < 0.3) break;
                 dist += 0.1;
             }
             dist = Math.max(0.3, dist - 0.1);
@@ -513,29 +505,26 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         }
         streamer.update(sx, sz);
         fresh2.clear();
-        freshV.clear();
-        streamer.drain(fresh2, freshV, 6);
-        if (fresh2.isEmpty() && freshV.isEmpty()) return;
+        streamer.drain(fresh2, 12);
+        if (fresh2.isEmpty()) return;
         final int N = WorldTextures.CHUNK_PX, S = WorldTextures.GROUND_SIZE;
         for (WorldTextures.Chunk2D c : fresh2) {
             int ox = Math.floorMod(c.cx * N, S), oy = Math.floorMod(c.cz * N, S);
             GLUtil.subTexture(groundTex, c.ground, ox, oy, N, N);
             GLUtil.subLuminance(detailTex, c.detail, ox, oy, N, N);
             GLUtil.subLuminance(matTex, c.mat, ox, oy, N, N);
-            int[] h = new int[64 * 64];
-            for (int i = 0; i < h.length; i++) h[i] = WorldTextures.heightTexel(c.heights[i], c.dig[i]);
-            GLUtil.subTexture(heightTex, h, Math.floorMod(c.cx * 64, WorldTextures.HEIGHT_SIZE), Math.floorMod(c.cz * 64, WorldTextures.HEIGHT_SIZE), 64, 64);
-            for (int j = 0; j < 2; j++)
-                for (int i = 0; i < 2; i++) {
+            final int H = WorldTextures.HPC, TP = WorldTextures.TPC;
+            int[] h = new int[H * H];
+            for (int i = 0; i < h.length; i++) h[i] = WorldTextures.heightTexel(c.heights[i]);
+            GLUtil.subTexture(heightTex, h, Math.floorMod(c.cx * H, WorldTextures.HEIGHT_SIZE), Math.floorMod(c.cz * H, WorldTextures.HEIGHT_SIZE), H, H);
+            for (int j = 0; j < TP; j++)
+                for (int i = 0; i < TP; i++) {
                     byte[] t = new byte[4];
-                    System.arraycopy(c.trees, (j * 2 + i) * 4, t, 0, 4);
-                    GLUtil.subCells(treeTex, t, Math.floorMod(c.cx * 2 + i, WorldTextures.TREE_GRID), Math.floorMod(c.cz * 2 + j, WorldTextures.TREE_GRID), 1, 1);
+                    System.arraycopy(c.trees, (j * TP + i) * 4, t, 0, 4);
+                    GLUtil.subCells(treeTex, t, Math.floorMod(c.cx * TP + i, WorldTextures.TREE_GRID), Math.floorMod(c.cz * TP + j, WorldTextures.TREE_GRID), 1, 1);
                 }
         }
         if (!fresh2.isEmpty()) GLUtil.remip(groundTex);
-        final int C = Voxels.CHUNK_V;
-        for (Voxels.VolChunk c : freshV)
-            GLUtil.subTexture3D(volTex, c.rg, Math.floorMod(c.cx * C, Voxels.NX), 0, Math.floorMod(c.cz * C, Voxels.NZ), C, Voxels.NY, C);
     }
 
     private void updatePlayer(float dt) {
@@ -559,8 +548,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         }
         float floor = groundAt(px, pz);
         float want = floor + EYE_HEIGHT;
-        float ceil = Voxels.ceilingAbove(px, floor + 0.3, pz);
-        if (want > ceil - 0.25f) want = ceil - 0.25f;
         eyeY = Float.isNaN(eyeY) ? want : eyeY + (want - eyeY) * Math.min(1f, dt * 14f);
         float target = mag > 0.02f ? mag : 0f;
         bobAmt += (target - bobAmt) * Math.min(1f, dt * 6f);
@@ -570,21 +557,9 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         pz = Math.max(WorldTextures.CENTRE_Z - lim, Math.min(WorldTextures.CENTRE_Z + lim, pz));
     }
 
-    /** Terrain plus fine relief (rocks, shrubs, walls) under a point. */
-    /**
-     * The ground under you: the first rock surface below your feet (allowing a step up), so in a
-     * tunnel it's the tunnel floor and on a ridge it's the ridge. On the open-air ground the 2D
-     * relief (rocks, logs, walls) rides on top, as in the shader.
-     */
+    /** The Mode 7 ground under a point: the heightmap plus the fine relief (rocks, logs, walls). */
     private float groundAt(double x, double z) {
-        float top = WorldTextures.floorAt(x, z);
-        double from = Float.isNaN(eyeY) ? top + 1.0 : eyeY - EYE_HEIGHT + 0.7;
-        float f = Voxels.floorBelow(x, from, z);
-        // the open-air ground's relief fades in as a tunnel floor rises to meet it (as in the shader)
-        float k = Math.max(0f, Math.min(1f, (f - top + 0.7f) / 0.4f));
-        k = k * k * (3f - 2f * k);
-        f = f + (Math.max(f, top) + WorldTextures.detailAt(x, z) - f) * k;   
-        return f;
+        return WorldTextures.floorAt(x, z) + WorldTextures.detailAt(x, z);
     }
 
     /** Walk unless the ground ahead is too steep (a wall) or the rock overhead is too low. */
@@ -598,8 +573,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         float ahead = groundAt(ax, az);
         // step up anything up to a stair's height (tunnel lips, rocks, banks); taller is a wall
         if (ahead - here > MAX_STEP_UP) return;
-        float ceil = Voxels.ceilingAbove(ax, ahead + 0.3, az);
-        if (ceil - ahead < MIN_HEADROOM) return;
         float[] tr = WorldTextures.trunkNear(ax, az);           // tree trunks are solid
         TreeLibrary lib = library;
         if (tr != null && lib != null) {

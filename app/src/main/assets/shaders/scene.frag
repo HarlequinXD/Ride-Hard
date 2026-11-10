@@ -22,7 +22,6 @@ out vec4 fragColor;
 uniform sampler2D uGround;   // rgb = ground colour, a = 0 open water, 0.5..1 land (lit fraction: tree shadows)
 uniform sampler2D uCloud;
 uniform sampler2D uHeight;   // r = open-air ground surface (the volume below holds tunnels and caves)
-uniform highp sampler3D uVol; // terrain volume, 0.5 m, 64 m tall: r = signed distance to the ground (-4..4 m), g = sky openness
 uniform sampler2D uDetail;   // fine relief on the floor: grass, pebbles, shrubs, rocks, walls (0..3 m)
 uniform sampler2D uMat;      // material id per texel: 0 grass, 1 earth, 2 stone, 3 wood, 4 water, 5 plant
 uniform sampler2D uFerns;    // one optional fern per 4 m cell: offset xz, size, presence + rotation
@@ -83,7 +82,6 @@ const float FAR = 150.0;
 const float FAR = 224.0;      // the ground window reaches 224 m or more each way
 #endif
 const float WIN = 512.0;      // metres of ground, heights, materials and trees held around you (wraps)
-const float VOL_NEAR = 88.0;  // the volume window holds at least 96 m each way; beyond, plain heights
 const float DMAX = 3.0;
 #ifdef MOBILE
 const float DFAR = 32.0;
@@ -93,22 +91,14 @@ const float DFAR = 70.0;      // detail relief fades out by here
 
 float detailFade(float t) { return smoothstep(DFAR, DFAR * 0.4, t); }
 
-// ---- the terrain volume: smooth signed distance, traced per pixel (no cubes: the 0.5 m grid is
-//      only data, blended trilinearly)
-const vec3 VOL_SCALE = vec3(1.0 / 256.0, 1.0 / 64.0, 1.0 / 256.0);
+// ---- Mode 7 terrain: a heightmap (0.5 m) traced per pixel, textures and fine relief on top.
+// The height above the ground, scaled down so steep slopes are never overstepped, serves as the
+// distance the march may step.
 float volDist(vec3 p) {
-    if (p.y > 63.5) return p.y - 63.0;                          // above the volume: open air
-    vec2 off = abs(p.xz - uCam.xz);
-    float far = smoothstep(VOL_NEAR - 8.0, VOL_NEAR, max(off.x, off.y));
-    float d = 0.0;
-    if (far < 1.0) d = textureLod(uVol, p * VOL_SCALE, 0.0).r * 8.0 - 4.0;
-    if (far > 0.0) {                                             // past the volume window: the heightfield
-        float hd = clamp((p.y - textureLod(uHeight, p.xz / WIN, 0.0).r * HMAX) * 0.7, -4.0, 4.0);
-        d = mix(d, hd, far);
-    }
-    return min(d, p.y - 0.3);                                    // bedrock
+    float top = textureLod(uHeight, p.xz / WIN, 0.0).r * HMAX;
+    return clamp((p.y - top) * 0.6, -4.0, 4.0);
 }
-float volOpen(vec3 p) { return textureLod(uVol, p * VOL_SCALE, 0.0).g; }
+float volOpen(vec3 p) { return 1.0; }                    // open sky everywhere (no caves)
 vec3 volNormal(vec3 p, float e) {
     const vec2 k = vec2(1.0, -1.0);
     return normalize(k.xyy * volDist(p + k.xyy * e) + k.yyx * volDist(p + k.yyx * e)

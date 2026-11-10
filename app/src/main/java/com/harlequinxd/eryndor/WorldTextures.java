@@ -4,7 +4,7 @@ import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * The world, generated on demand in 32 m chunks (pure Java, no Android dependencies).
+ * The world, generated on demand in small 16 m chunks (pure Java, no Android dependencies).
  *
  * The land is 32 km across and never repeats: every generator works from absolute world
  * coordinates, seeded by position, so any chunk can be made at any time, in any order, on any
@@ -13,11 +13,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * length of the land), an east-west street and a round plaza with a fountain; Hollow Hill and its
  * cave to the east; the standing stones on their mound at (36, 228); a river near z = 30 under a
  * stone bridge. Outside it the wilds go on: rolling hills and high ground, forests (broadleaf and
- * pine), more rivers every ~1.4 km, rocky ridges with tunnels driven through them, boulders,
+ * pine), more rivers every ~1.4 km, boulders,
  * fallen logs, cairns. Mountains wall the land in at the edges.
  *
- * The GPU only ever holds a window around the player (512 m of ground, 256 m of the voxel volume)
- * addressed with wrap-around, so a chunk's data always lives at (world position mod window).
+ * The land is drawn Mode 7 style: a heightmap traced per pixel with textures on top. The GPU only
+ * ever holds a 512 m window of it around the player, addressed with wrap-around, so a chunk's data always lives at (world position mod window).
  * {@link ChunkStreamer} keeps the window filled as you walk.
  *
  * Ground texels: 8 px per metre, 15-bit ordered dither; alpha marks water (0) or how lit the land
@@ -32,9 +32,12 @@ final class WorldTextures {
     static final int GROUND_SIZE = 4096;
     static final float WORLD_SIZE = 512f;              // metres of ground in the window
     static final float PPM = GROUND_SIZE / WORLD_SIZE; // 8 texels per metre
-    static final float CHUNK = 32f;                    // metres per chunk
-    static final int CHUNK_PX = 256;                   // ground texels per chunk side
-    static final int WIN_CHUNKS = 16;                  // chunks across the 2D window
+    static final float CHUNK = 16f;                    // metres per chunk (small: quick to make and upload)
+    static final int CHUNK_PX = 128;                   // ground texels per chunk side
+    static final int WIN_CHUNKS = 32;                  // chunks across the window
+    static final int HPC = 32;                         // height samples per chunk side (0.5 m)
+    static final int TPC = 1;                          // tree cells per chunk side (16 m)
+    private static final float AREA = (CHUNK / 32f) * (CHUNK / 32f);   // scatter counts were per 32 m
     static final int CLOUD_SIZE = 256;
     /** Ground texels per noise unit: noise coordinates are metres / 256. */
     private static final float TPU = 2048f;
@@ -286,7 +289,7 @@ final class WorldTextures {
     // ------------------------------------------------------------------ heights
     static final int HEIGHT_SIZE = 1024;             // 0.5 m per sample over the 512 m window
     static final float HEIGHT_MAX = 64f;             // metres represented by 8-bit 255
-    /** The whole land sits this high, leaving deep rock underneath for the tunnel network. */
+    /** The whole land sits this high (room for valleys and rivers below the meadows). */
     static final float BASE = 16f;
     static final float WATER_LEVEL = 4f;
     static final float VILLAGE_H = 10f;
@@ -300,72 +303,20 @@ final class WorldTextures {
         return Math.round(h / HEIGHT_MAX * 255f) * HEIGHT_MAX / 255f;
     }
 
-    /** The open-air ground surface (the voxel volume carves tunnels and caves below it). */
+    /** The ground surface (the heightmap). */
     static float terrainAt(float wx, float wz) {
         return terrain(wx, wz);
     }
 
-    // ---- ridges raised for the tunnels: at most one per 256 m region, chosen from its seed
-    static final float RIDGE_H = 11f, RIDGE_HALF_LEN = 30f, RIDGE_HALF_WIDTH = 12f;
     static final float REGION = 256f;
-    private static final float[] NONE = new float[0];
-    private static final ConcurrentHashMap<Long, float[]> ridgeCache = new ConcurrentHashMap<>();
 
     static long key(int a, int b) {
         return ((long) a << 32) ^ (b & 0xFFFFFFFFL);
     }
 
-    /** The ridge in region (rx, rz): centre x, z, tunnel direction (radians); or null. */
-    static float[] ridgeIn(int rx, int rz) {
-        long k = key(rx, rz);
-        float[] r = ridgeCache.get(k);
-        if (r == null) {
-            r = pickRidge(rx, rz);
-            ridgeCache.put(k, r);
-        }
-        return r.length == 0 ? null : r;
-    }
-
-    private static float[] pickRidge(int rx, int rz) {
-        Random rnd = new Random(rx * 73856093L ^ rz * 19349663L ^ 0x5EEDL);
-        if (rnd.nextFloat() > 0.55f) return NONE;
-        for (int attempt = 0; attempt < 5; attempt++) {
-            float x = rx * REGION + 56 + rnd.nextFloat() * 144, z = rz * REGION + 56 + rnd.nextFloat() * 144;
-            float ang = rnd.nextFloat() * (float) Math.PI;
-            if (ridgeOk(x, z, ang)) return new float[]{x, z, ang};
-        }
-        return NONE;
-    }
-
-    /** Clear of the village, the north road, rivers, Hollow Hill, the stones and the world's edge. */
-    private static boolean ridgeOk(float x, float z, float ang) {
-        if (Math.max(Math.abs(x - CENTRE_X), Math.abs(z - CENTRE_Z)) > WORLD_HALF - 1200) return false;
-        float rx = -(float) Math.sin(ang), rz = (float) Math.cos(ang);
-        for (float sAl = -RIDGE_HALF_LEN; sAl <= RIDGE_HALF_LEN; sAl += 6)
-            for (float sAc = -26; sAc <= 26; sAc += 13) {
-                float px = x + rx * sAl + (float) Math.cos(ang) * sAc, pz = z + rz * sAl + (float) Math.sin(ang) * sAc;
-                if (Math.abs(px - 128f) < 74 && Math.abs(pz - 128f) < 74) return false;          // village
-                if (Math.abs(px - 128f) < 14) return false;                                     // north road
-                if (Math.abs(riverOff(px, pz)) < riverHalfWidth(px) + 4) return false;            // rivers
-                if (Math.hypot(px - Cave.HILL_X, pz - Cave.HILL_Z) < 42) return false;          // Hollow Hill
-                if (Math.hypot(px - STONES_X, pz - STONES_Z) < 24) return false;                // standing stones
-                if (Math.hypot(px - Voxels.START_X, pz - Voxels.START_Z) < 60) return false;    // over the start caves
-            }
-        return true;
-    }
-
     /** Open-air terrain height. */
     private static float terrain(float wx, float wz) {
         float h = terrainBase(wx, wz);
-        float[] r = ridgeIn((int) Math.floor(wx / REGION), (int) Math.floor(wz / REGION));
-        if (r != null) {
-            float dx = wx - r[0], dz = wz - r[1];
-            float acrossT = dx * (float) Math.cos(r[2]) + dz * (float) Math.sin(r[2]);      // along the tunnel
-            float alongR = -dx * (float) Math.sin(r[2]) + dz * (float) Math.cos(r[2]);      // along the ridge
-            float prof = (float) Math.exp(-(acrossT * acrossT) / (RIDGE_HALF_WIDTH * RIDGE_HALF_WIDTH));
-            float ends = 1f - smooth(RIDGE_HALF_LEN - 14f, RIDGE_HALF_LEN, Math.abs(alongR));
-            h += RIDGE_H * prof * ends * (0.85f + 0.15f * (float) Math.cos(alongR * 0.21f));
-        }
         return Math.min(h + BASE, HEIGHT_MAX - 2f);
     }
 
@@ -429,14 +380,14 @@ final class WorldTextures {
     static int[] heightTexture() {
         int n = hFloor.length;
         int[] out = new int[n];
-        for (int i = 0; i < n; i++) out[i] = heightTexel(hFloor[i], Digging.digWin[i]);
+        for (int i = 0; i < n; i++) out[i] = heightTexel(hFloor[i]);
         return out;
     }
 
-    /** Height texel: R = B = ground height, G = bare dug / heaped dirt (0..255), A = 255. */
-    static int heightTexel(float h, byte dig) {
+    /** Height texel: R = G = B = ground height, A = 255. */
+    static int heightTexel(float h) {
         int r = Math.round(h / HEIGHT_MAX * 255f);
-        return (255 << 24) | (r << 16) | ((dig & 255) << 8) | r;
+        return (255 << 24) | (r << 16) | (r << 8) | r;
     }
 
     /** Bilinear sample of the window heights, matching GL_LINEAR on the height texture. */
@@ -484,8 +435,6 @@ final class WorldTextures {
                 paintTexel(px + b, pz + a, tmp);
                 if (tmp[6] != 0f) clear = false;
             }
-        // never over a tunnel or cave: its roots would hang in the air (the floating tree)
-        if (clear && Voxels.carvedUnder(wx, wz, 4.5f)) clear = false;
         if (Math.max(Math.abs(wx - CENTRE_X), Math.abs(wz - CENTRE_Z)) > WORLD_HALF - 300) clear = false;
         float g = forestAt(wx, wz);
         float chance = g > 0.55f ? 0.85f : (g > 0.47f ? 0.45f : 0.22f);
@@ -506,14 +455,13 @@ final class WorldTextures {
     }
 
     // ------------------------------------------------------------------ chunks
-    /** One painted 32 m chunk, ready to copy into the window. */
+    /** One painted 16 m chunk, ready to copy into the window. */
     static final class Chunk2D {
         final int cx, cz;
         final int[] ground = new int[CHUNK_PX * CHUNK_PX];
         final byte[] detail = new byte[CHUNK_PX * CHUNK_PX], mat = new byte[CHUNK_PX * CHUNK_PX];
-        final float[] heights = new float[64 * 64];       // 0.5 m samples
-        final byte[] trees = new byte[2 * 2 * 4];         // its 2 x 2 tree cells
-        final byte[] dig = new byte[64 * 64];             // bare dirt where it was dug or heaped (0.5 m)
+        final float[] heights = new float[HPC * HPC];     // 0.5 m samples
+        final byte[] trees = new byte[TPC * TPC * 4];     // its tree cells
 
         Chunk2D(int cx, int cz) {
             this.cx = cx;
@@ -575,7 +523,7 @@ final class WorldTextures {
     }
 
     /**
-     * Paint one 32 m chunk: ground colour, fine relief, materials, the trees in its cells, their
+     * Paint one 16 m chunk: ground colour, fine relief, materials, the trees in its cells, their
      * shadows (if the species library is ready) and its heights. Thread-safe.
      */
     static Chunk2D paintChunk(int ccx, int ccz, TreeLibrary lib) {
@@ -585,15 +533,15 @@ final class WorldTextures {
         Canvas cv = new Canvas(gx0, gy0, N);
 
         // heights at 0.5 m with a one-sample border (for slopes)
-        final int HN = 66;
+        final int HN = HPC + 2;
         float[] hh = new float[HN * HN];
         for (int j = 0; j < HN; j++)
             for (int i = 0; i < HN; i++) {
-                float wx = (ccx * 64 + i - 1 + 0.5f) * 0.5f, wz = (ccz * 64 + j - 1 + 0.5f) * 0.5f;
+                float wx = (ccx * HPC + i - 1 + 0.5f) * 0.5f, wz = (ccz * HPC + j - 1 + 0.5f) * 0.5f;
                 hh[j * HN + i] = terrain(wx, wz);
             }
-        for (int j = 0; j < 64; j++)
-            for (int i = 0; i < 64; i++) out.heights[j * 64 + i] = q8(hh[(j + 1) * HN + i + 1]);
+        for (int j = 0; j < HPC; j++)
+            for (int i = 0; i < HPC; i++) out.heights[j * HPC + i] = q8(hh[(j + 1) * HN + i + 1]);
 
         float[] t = new float[7];
         for (int y = 0; y < N; y++)
@@ -640,7 +588,7 @@ final class WorldTextures {
                 int sx = ccx + dx, sz = ccz + dz;
                 Random r = new Random(chunkSeed(sx, sz, 1));
                 float wcx = (sx + 0.5f) * CHUNK, wcz = (sz + 0.5f) * CHUNK;
-                float mean = 20f * (0.6f + 0.9f * smooth(0.45f, 0.75f, m1.at(wcx / 256f + 0.7f, wcz / 256f + 0.2f)));
+                float mean = 20f * AREA * (0.6f + 0.9f * smooth(0.45f, 0.75f, m1.at(wcx / 256f + 0.7f, wcz / 256f + 0.2f)));
                 int n = count(r, mean);
                 for (int k = 0; k < n; k++) {
                     int cx = sx * N + r.nextInt(N), cy = sz * N + r.nextInt(N);
@@ -661,7 +609,7 @@ final class WorldTextures {
                 Random r = new Random(chunkSeed(sx, sz, 2));
                 float wcx = (sx + 0.5f) * CHUNK, wcz = (sz + 0.5f) * CHUNK;
                 float woods = forestAt(wcx, wcz) > 0.55f ? 2.2f : 1f;
-                int n = count(r, 2.5f * woods);
+                int n = count(r, 2.5f * AREA * woods);
                 for (int k = 0; k < n; k++) {
                     int cx = sx * N + r.nextInt(N), cy = sz * N + r.nextInt(N);
                     float len = 10f + r.nextFloat() * 18f, rad = 1.6f + r.nextFloat() * 1.6f, rot = r.nextFloat() * (float) Math.PI;
@@ -669,7 +617,7 @@ final class WorldTextures {
                     if (busyAt(cx, cy, t)) continue;
                     log(cv, cx, cy, len, rad, rot, new Random(seed), f2);
                 }
-                n = count(r, 3.4f * woods);
+                n = count(r, 3.4f * AREA * woods);
                 for (int k = 0; k < n; k++) {
                     int cx = sx * N + r.nextInt(N), cy = sz * N + r.nextInt(N);
                     float rad = 2.2f + r.nextFloat() * 2.5f;
@@ -683,7 +631,7 @@ final class WorldTextures {
             for (int dx = -1; dx <= 1; dx++) {
                 int sx = ccx + dx, sz = ccz + dz;
                 Random r = new Random(chunkSeed(sx, sz, 3));
-                int n = count(r, 1.4f);
+                int n = count(r, 1.4f * AREA);
                 for (int k = 0; k < n; k++) {
                     int cx = sx * N + r.nextInt(N), cy = sz * N + r.nextInt(N);
                     long seed = r.nextLong();
@@ -699,7 +647,7 @@ final class WorldTextures {
             for (int dx = -1; dx <= 1; dx++) {
                 int sx = ccx + dx, sz = ccz + dz;
                 Random r = new Random(chunkSeed(sx, sz, 4));
-                int n = count(r, 7.8f);
+                int n = count(r, 7.8f * AREA);
                 for (int k = 0; k < n; k++) {
                     int cx = sx * N + r.nextInt(N), cy = sz * N + r.nextInt(N);
                     float rad = 2f + r.nextFloat() * 2f;
@@ -721,9 +669,9 @@ final class WorldTextures {
                 out.detail[i] = (byte) Math.round(clamp(cv.DH[i] / DETAIL_MAX) * 255f);
                 out.mat[i] = cv.MAT[i];
             }
-        for (int j = 0; j < 2; j++)
-            for (int i = 0; i < 2; i++)
-                System.arraycopy(treeBytes(ccx * 2 + i, ccz * 2 + j), 0, out.trees, (j * 2 + i) * 4, 4);
+        for (int j = 0; j < TPC; j++)
+            for (int i = 0; i < TPC; i++)
+                System.arraycopy(treeBytes(ccx * TPC + i, ccz * TPC + j), 0, out.trees, (j * TPC + i) * 4, 4);
         if (lib != null) TreeShadows.applyChunk(out.ground, gx0, gy0, N, lib);
         return out;
     }
@@ -738,15 +686,13 @@ final class WorldTextures {
             System.arraycopy(c.detail, src, detailWin, dst, N);
             System.arraycopy(c.mat, src, matWin, dst, N);
         }
-        int hx = Math.floorMod(c.cx * 64, HEIGHT_SIZE), hz = Math.floorMod(c.cz * 64, HEIGHT_SIZE);
-        for (int y = 0; y < 64; y++) {
-            System.arraycopy(c.heights, y * 64, hFloor, (hz + y) * HEIGHT_SIZE + hx, 64);
-            System.arraycopy(c.dig, y * 64, Digging.digWin, (hz + y) * HEIGHT_SIZE + hx, 64);
-        }
-        for (int j = 0; j < 2; j++)
-            for (int i = 0; i < 2; i++) {
-                int tx = Math.floorMod(c.cx * 2 + i, TREE_GRID), tz = Math.floorMod(c.cz * 2 + j, TREE_GRID);
-                System.arraycopy(c.trees, (j * 2 + i) * 4, treeWin, (tz * TREE_GRID + tx) * 4, 4);
+        int hx = Math.floorMod(c.cx * HPC, HEIGHT_SIZE), hz = Math.floorMod(c.cz * HPC, HEIGHT_SIZE);
+        for (int y = 0; y < HPC; y++)
+            System.arraycopy(c.heights, y * HPC, hFloor, (hz + y) * HEIGHT_SIZE + hx, HPC);
+        for (int j = 0; j < TPC; j++)
+            for (int i = 0; i < TPC; i++) {
+                int tx = Math.floorMod(c.cx * TPC + i, TREE_GRID), tz = Math.floorMod(c.cz * TPC + j, TREE_GRID);
+                System.arraycopy(c.trees, (j * TPC + i) * 4, treeWin, (tz * TREE_GRID + tx) * 4, 4);
             }
     }
 

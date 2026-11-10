@@ -103,19 +103,6 @@ final class GLUtil {
         return t[0];
     }
 
-    static int texture3D(ByteBuffer data, int w, int h, int d) {
-        int[] t = new int[1];
-        GLES20.glGenTextures(1, t, 0);
-        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, t[0]);
-        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
-        GLES30.glTexImage3D(GLES30.GL_TEXTURE_3D, 0, GLES30.GL_RG8, w, h, d, 0, GLES30.GL_RG, GLES20.GL_UNSIGNED_BYTE, data);
-        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_REPEAT);
-        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
-        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_WRAP_R, GLES20.GL_REPEAT);
-        return t[0];
-    }
 
     /** Square ARGB layers as one 2D texture array: repeating, mipmapped, point sampled. */
     static int textureArray(int[][] layers, int size) {
@@ -282,12 +269,4 @@ final class GLUtil {
         GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D);
     }
 
-    /** Replace a block of the RG8 volume. */
-    static void subTexture3D(int tex, byte[] rg, int x, int y, int z, int w, int h, int d) {
-        ByteBuffer bb = scratch(w * h * d * 2);
-        bb.put(rg, 0, w * h * d * 2).flip();
-        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, tex);
-        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
-        GLES30.glTexSubImage3D(GLES30.GL_TEXTURE_3D, 0, x, y, z, w, h, d, GLES30.GL_RG, GLES20.GL_UNSIGNED_BYTE, bb);
-    }
 }

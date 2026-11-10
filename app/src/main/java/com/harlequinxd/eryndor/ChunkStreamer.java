@@ -9,33 +9,30 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Keeps the GPU's windows on the world filled as the player walks: 16 x 16 chunks (512 m) of
- * ground, heights and trees, and 8 x 8 chunks (256 m) of the voxel volume, centred on the player.
- * Chunks are generated on background threads, nearest first, and copied into the windows (and
- * uploaded) on the GL thread, a few per frame. Window slots use wrap-around addressing, so a chunk
- * always lands at (its position mod the window) and nothing ever has to move.
+ * Keeps the GPU's window on the world filled as the player walks: 16 x 16 chunks (512 m) of
+ * ground textures, heightmap and trees, centred on the player. Chunks are painted on background
+ * threads, nearest first, and copied into the window (and uploaded) on the GL thread, a few per
+ * frame. Window slots use wrap-around addressing, so a chunk always lands at (its position mod the
+ * window) and nothing ever has to move. (No voxels: the land is a Mode 7 heightmap.)
  */
 final class ChunkStreamer {
-    private static final int W2 = WorldTextures.WIN_CHUNKS, WV = Voxels.WIN_CHUNKS;
+    private static final int W2 = WorldTextures.WIN_CHUNKS;
     private static final int NONE = Integer.MIN_VALUE;
 
     private final ExecutorService pool;
     private final ConcurrentLinkedQueue<Object> done = new ConcurrentLinkedQueue<>();
-    private final Set<Long> pending2 = ConcurrentHashMap.newKeySet(), pendingV = ConcurrentHashMap.newKeySet();
-    private final int[] have2X = new int[W2 * W2], have2Z = new int[W2 * W2];
-    private final int[] haveVX = new int[WV * WV], haveVZ = new int[WV * WV];
-    /** First chunk of each window (the window covers [x0, x0 + size) chunks). */
-    private volatile int c2x0 = NONE, c2z0, cvx0, cvz0;
+    private final Set<Long> pending = ConcurrentHashMap.newKeySet();
+    private final int[] haveX = new int[W2 * W2], haveZ = new int[W2 * W2];
+    /** First chunk of the window (it covers [x0, x0 + W2) chunks). */
+    private volatile int cx0 = NONE, cz0;
     private boolean dirty = true;
     volatile TreeLibrary lib;
 
     private static final class Cancelled {
         final long key;
-        final boolean vol;
 
-        Cancelled(long key, boolean vol) {
+        Cancelled(long key) {
             this.key = key;
-            this.vol = vol;
         }
     }
 
@@ -47,144 +44,105 @@ final class ChunkStreamer {
             t.setPriority(Thread.NORM_PRIORITY - 1);
             return t;
         });
-        java.util.Arrays.fill(have2X, NONE);
-        java.util.Arrays.fill(haveVX, NONE);
+        java.util.Arrays.fill(haveX, NONE);
     }
 
     private static int chunkOf(double m) {
         return (int) Math.floor(m / WorldTextures.CHUNK);
     }
 
-    private boolean wants2(int cx, int cz) {
-        return cx >= c2x0 && cx < c2x0 + W2 && cz >= c2z0 && cz < c2z0 + W2;
+    private boolean wants(int cx, int cz) {
+        return cx >= cx0 && cx < cx0 + W2 && cz >= cz0 && cz < cz0 + W2;
     }
 
-    private boolean wantsV(int cx, int cz) {
-        return cx >= cvx0 && cx < cvx0 + WV && cz >= cvz0 && cz < cvz0 + WV;
+    private static int slot(int cx, int cz) {
+        return Math.floorMod(cz, W2) * W2 + Math.floorMod(cx, W2);
     }
 
-    private static int slot(int cx, int cz, int w) {
-        return Math.floorMod(cz, w) * w + Math.floorMod(cx, w);
-    }
-
-    /** Re-centre on the player and queue every chunk the windows are missing, nearest first. */
+    /** Re-centre on the player and queue every chunk the window is missing, nearest first. */
     void update(double px, double pz) {
         int pcx = chunkOf(px), pcz = chunkOf(pz);
         int nx = pcx - W2 / 2, nz = pcz - W2 / 2;
-        if (!dirty && nx == c2x0 && nz == c2z0) return;
+        if (!dirty && nx == cx0 && nz == cz0) return;
         dirty = false;
-        cvx0 = pcx - WV / 2;
-        cvz0 = pcz - WV / 2;
-        c2z0 = nz;
-        c2x0 = nx;
+        cz0 = nz;
+        cx0 = nx;
         ArrayList<int[]> want = new ArrayList<>();
-        for (int cz = c2z0; cz < c2z0 + W2; cz++)
-            for (int cx = c2x0; cx < c2x0 + W2; cx++) {
-                int s = slot(cx, cz, W2);
-                if ((have2X[s] != cx || have2Z[s] != cz) && !pending2.contains(WorldTextures.key(cx, cz)))
-                    want.add(new int[]{cx, cz, 0, (cx - pcx) * (cx - pcx) + (cz - pcz) * (cz - pcz)});
+        for (int cz = cz0; cz < cz0 + W2; cz++)
+            for (int cx = cx0; cx < cx0 + W2; cx++) {
+                int s = slot(cx, cz);
+                if ((haveX[s] != cx || haveZ[s] != cz) && !pending.contains(WorldTextures.key(cx, cz)))
+                    want.add(new int[]{cx, cz, (cx - pcx) * (cx - pcx) + (cz - pcz) * (cz - pcz)});
             }
-        for (int cz = cvz0; cz < cvz0 + WV; cz++)
-            for (int cx = cvx0; cx < cvx0 + WV; cx++) {
-                int s = slot(cx, cz, WV);
-                if ((haveVX[s] != cx || haveVZ[s] != cz) && !pendingV.contains(WorldTextures.key(cx, cz)))
-                    want.add(new int[]{cx, cz, 1, (cx - pcx) * (cx - pcx) + (cz - pcz) * (cz - pcz) - 2});
-            }
-        want.sort((a, b) -> Integer.compare(a[3], b[3]));
-        for (int[] w : want) submit(w[0], w[1], w[2] == 1);
+        want.sort((a, b) -> Integer.compare(a[2], b[2]));
+        for (int[] w : want) submit(w[0], w[1]);
     }
 
-    private void submit(int cx, int cz, boolean vol) {
+    private void submit(int cx, int cz) {
         long k = WorldTextures.key(cx, cz);
-        (vol ? pendingV : pending2).add(k);
+        pending.add(k);
         pool.execute(() -> {
             try {
-                if (vol ? !wantsV(cx, cz) : !wants2(cx, cz)) {        // walked away before it started
-                    done.add(new Cancelled(k, vol));
+                if (!wants(cx, cz)) {                       // walked away before it started
+                    done.add(new Cancelled(k));
                     return;
                 }
-                if (vol) {
-                    Voxels.VolChunk c = Voxels.fillChunk(cx, cz);
-                    Digging.applyTo(c);                               // what you dug stays dug
-                    done.add(c);
-                } else {
-                    WorldTextures.Chunk2D c = WorldTextures.paintChunk(cx, cz, lib);
-                    Digging.maskFor(c);
-                    done.add(c);
-                }
+                done.add(WorldTextures.paintChunk(cx, cz, lib));
             } catch (Throwable t) {
                 t.printStackTrace();
-                done.add(new Cancelled(k, vol));
+                done.add(new Cancelled(k));
             }
         });
     }
 
     /**
-     * Copy up to max finished chunks that are still wanted into the windows; they are added to the
-     * lists for uploading. Returns how many were applied. Call on the thread that owns the windows.
+     * Copy up to max finished chunks that are still wanted into the window; they are added to the
+     * list for uploading. Returns how many were applied. Call on the thread that owns the window.
      */
-    int drain(List<WorldTextures.Chunk2D> out2, List<Voxels.VolChunk> outV, int max) {
+    int drain(List<WorldTextures.Chunk2D> out, int max) {
         int n = 0;
         Object o;
         while (n < max && (o = done.poll()) != null) {
             if (o instanceof Cancelled) {
-                Cancelled c = (Cancelled) o;
-                (c.vol ? pendingV : pending2).remove(c.key);
+                pending.remove(((Cancelled) o).key);
                 dirty = true;
-            } else if (o instanceof WorldTextures.Chunk2D) {
-                WorldTextures.Chunk2D c = (WorldTextures.Chunk2D) o;
-                pending2.remove(WorldTextures.key(c.cx, c.cz));
-                if (!wants2(c.cx, c.cz)) { dirty = true; continue; }
-                WorldTextures.store(c);
-                int s = slot(c.cx, c.cz, W2);
-                have2X[s] = c.cx;
-                have2Z[s] = c.cz;
-                if (out2 != null) out2.add(c);
-                n++;
-            } else {
-                Voxels.VolChunk c = (Voxels.VolChunk) o;
-                pendingV.remove(WorldTextures.key(c.cx, c.cz));
-                if (!wantsV(c.cx, c.cz)) { dirty = true; continue; }
-                Voxels.store(c);
-                int s = slot(c.cx, c.cz, WV);
-                haveVX[s] = c.cx;
-                haveVZ[s] = c.cz;
-                if (outV != null) outV.add(c);
-                n++;
+                continue;
             }
+            WorldTextures.Chunk2D c = (WorldTextures.Chunk2D) o;
+            pending.remove(WorldTextures.key(c.cx, c.cz));
+            if (!wants(c.cx, c.cz)) { dirty = true; continue; }
+            WorldTextures.store(c);
+            int s = slot(c.cx, c.cz);
+            haveX[s] = c.cx;
+            haveZ[s] = c.cz;
+            if (out != null) out.add(c);
+            n++;
         }
         return n;
     }
 
-    /** Whether the chunks under the player are in place (ground and volume). */
+    /** Whether the chunk under the player is in place. */
     boolean ready(double px, double pz) {
-        int cx = chunkOf(px), cz = chunkOf(pz);
-        int s = slot(cx, cz, W2), v = slot(cx, cz, WV);
-        return have2X[s] == cx && have2Z[s] == cz && haveVX[v] == cx && haveVZ[v] == cz;
+        int cx = chunkOf(px), cz = chunkOf(pz), s = slot(cx, cz);
+        return haveX[s] == cx && haveZ[s] == cz;
     }
 
-    /** How many window slots hold what they should. */
     private int resident() {
         int n = 0;
-        for (int cz = c2z0; cz < c2z0 + W2; cz++)
-            for (int cx = c2x0; cx < c2x0 + W2; cx++) {
-                int s = slot(cx, cz, W2);
-                if (have2X[s] == cx && have2Z[s] == cz) n++;
-            }
-        for (int cz = cvz0; cz < cvz0 + WV; cz++)
-            for (int cx = cvx0; cx < cvx0 + WV; cx++) {
-                int s = slot(cx, cz, WV);
-                if (haveVX[s] == cx && haveVZ[s] == cz) n++;
+        for (int cz = cz0; cz < cz0 + W2; cz++)
+            for (int cx = cx0; cx < cx0 + W2; cx++) {
+                int s = slot(cx, cz);
+                if (haveX[s] == cx && haveZ[s] == cz) n++;
             }
         return n;
     }
 
-    /** Fill both windows around a point, blocking (the loading screen shows progress). */
+    /** Fill the window around a point, blocking (the loading screen shows progress). */
     void loadAll(double px, double pz, float p0, float p1) {
-        int total = W2 * W2 + WV * WV;
+        int total = W2 * W2;
         update(px, pz);
         while (true) {
-            drain(null, null, 1 << 20);
+            drain(null, 1 << 20);
             update(px, pz);
             int r = resident();
             Loading.within(p0, p1, r / (float) total);
@@ -195,7 +153,7 @@ final class ChunkStreamer {
 
     /** Repaint all the ground (after a tree species changes shape: new shadows). */
     void invalidateGround() {
-        java.util.Arrays.fill(have2X, NONE);
+        java.util.Arrays.fill(haveX, NONE);
         dirty = true;
     }
 }

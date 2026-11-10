@@ -28,32 +28,19 @@ Hollowspire.
   view distance, no traced bounce light, fewer sun-shaft samples, lighter parallax), the game
   starts at 180 lines and the resolution follows the frame rate (120 to 240 lines, still filling
   the screen), and it asks for a large heap for the streamed world.
-- **Pixel-voxel terrain (a volume, not a heightmap)**: the land is a 3D signed-distance volume
-  (0.5 m samples, 64 m tall; the GPU holds a 256 m window of it around you) traced per screen
-  pixel: sphere steps through open air, fine steps near the surface, trilinear blending so every
-  surface is smooth (no cubes; the grid is only data). That allows real **tunnels, caves and
-  overhangs**: Hollow Hill's winding cave and domed chamber, and rocky ridges raised across open
-  country (about one in two 256 m regions has one), each with a tunnel bored through under
-  several metres of rock. Sky openness is traced
-  through the volume too (a second channel), so tunnels darken away from their portals and the
-  lantern takes over; walls, ceilings and tunnel floors are rock, the open-air ground keeps the
-  painted ground, texture sets and 2D relief. You walk on the first rock surface under your feet,
-  so you can go through a tunnel or over its ridge. Trees never stand over a tunnel or cave (no
-  more floating trees with their roots in a tunnel roof).
-- **A 32 km world in chunks**: the land is 32 km across (16 km each way from the village) and never
-  repeats. Everything is generated per 32 m chunk from its world position (non-repeating hashed
-  noise, seeds per chunk, trees per 16 m cell), so chunks come out the same in any order. The GPU
-  holds a 512 m window of ground, heights, materials and trees and a 256 m window of the voxel
-  volume, both with wrap-around addressing; background threads generate the chunks you are
-  walking towards (nearest first) and a few are uploaded each frame, so there is no seam and no
-  repaint of the whole world. Past ~90 m the tracer falls back from the volume to the heightfield,
-  and past ~150 m the land fades into the painted far tree line, hiding the window's edge. The
-  wilds: rolling lowlands to big high ground varying over kilometres, broadleaf and pine forests
-  with their own floors (leaf litter, needles, moss, roots), bare rock and gravel on steep slopes,
-  a river every ~1.4 km (each bridged where the north road crosses it), the north road running the
-  whole length of the land, boulders, fallen logs, stumps, cairns and molehills, and a wall of
-  mountains at the edges. The shader works in a frame shifted by multiples of 4096 m so its
-  floats stay precise anywhere.
+- **Mode 7 terrain**: the land is a procedural heightmap (0.5 m) traced per screen pixel with the
+  ground textures, materials and fine relief on top: sphere steps through open air, fine steps near
+  the ground. No voxels and no caves.
+- **A 32 km procedural world in small chunks**: the land is 32 km across (16 km each way from the
+  village) and never repeats. It is generated in small 16 m chunks from world position
+  (non-repeating hashed noise, seeds per chunk, trees per 16 m cell), so chunks come out the same in
+  any order. The GPU holds a 512 m window of ground textures, heightmap, materials and trees with
+  wrap-around addressing; background threads make the chunks you walk toward (nearest first) and
+  a dozen small ones are uploaded each frame, so there is no seam and no hitch. Past ~150 m the
+  land fades into the painted far tree line. The wilds: rolling lowlands to big high ground
+  varying over kilometres, forests with their own floors, bare rock and gravel on steep slopes, a
+  river every ~1.4 km (bridged where the north road crosses), boulders, fallen logs, stumps,
+  cairns and molehills, and mountains at the edges.
 - **Fine relief**: a detail heightmap (8 texels per metre), texel for texel with the ground colours,
   lifts lumpy hummocks, dense grass, shrubs, ferns, fallen logs, stumps, cairns, molehills,
   boulders, pebbles, grass tufts, flowers, cobbles, curbs, bridge parapets, the
