@@ -8,7 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * The land is 32 km across and never repeats: every generator works from absolute world
  * coordinates, seeded by position, so any chunk can be made at any time, in any order, on any
- * thread, and always comes out the same. At the centre stands an alien town (see Town) on a flat
+ * thread, and always comes out the same. At the centre is a flat meadow plateau on a flat
  * plateau at (128, 128), its streets paved with hexagonal flagstones; the north road runs out of it
  * as a track the whole length of the land, and a river near z = 30 passes under a stone bridge.
  * Outside it the wilds go on: rolling hills and high ground, forests, more rivers every ~1.4 km,
@@ -745,50 +745,10 @@ final class WorldTextures {
         float dx = wrapD(wx, 128f), dz = wrapD(wz, 128f);
         float sd = Math.abs(dx);
         float edgeN = (m2.at(u * 2f, v * 2f) - 0.5f) * 0.8f;
-        float townN = Town.inTown(wx, wz) ? 1f : 0f;
+        float townN = 0f;
         boolean paved = false;
         float roadA = 0f;
 
-        // ---- the alien town: hexagonal flagstones on every street and square, smooth pale tiles
-        // where the buildings stand (their floors), a glowing inlay ring round the plaza
-        if (townN > 0.5f) {
-            float hs = 0.62f;                                        // hex flagstones
-            float qx = wx / (hs * 1.7320508f), qz = wz / hs - qx * 0.5f;
-            int ix = (int) Math.floor(qx), iz = (int) Math.floor(qz);
-            float fx = qx - ix, fz = qz - iz;
-            if (fx + fz > 1f) { ix++; iz++; fx = 1f - fx; fz = 1f - fz; }
-            int cell = (int) Math.floor(qx + 0.5f) * 7919 + (int) Math.floor(qz + 0.5f) * 104729;
-            float jt = hash(cell, 5);
-            float edgeH = Math.min(Math.min(fx, fz), Math.abs(1f - fx - fz));
-            float l = 0.80f + 0.18f * jt + 0.08f * (fine - 0.5f);
-            r = 0.58f * l; g = 0.56f * l; b = 0.60f * l;
-            if (Math.abs(((qx + qz * 0.5f) % 1f + 1f) % 1f - 0.5f) < 0.04f || Math.abs((qz % 1f + 1f) % 1f) < 0.05f) {
-                r *= 0.6f; g *= 0.6f; b *= 0.62f;                    // joints
-            }
-            int k = Town.lotAt(wx, wz);
-            if (k >= 0 && Town.type[k] >= 1 && Town.type[k] <= 4) {
-                int li = k % Town.N, lj = k / Town.N;
-                float lx = wx - (Town.X0 + (li + 0.5f) * Town.LOT), lz = wz - (Town.Z0 + (lj + 0.5f) * Town.LOT);
-                float bx, bz;
-                switch (Town.rot[k]) {
-                    case 1: bx = -lz; bz = lx; break;
-                    case 2: bx = -lx; bz = -lz; break;
-                    case 3: bx = lz; bz = -lx; break;
-                    default: bx = lx; bz = lz;
-                }
-                if (Town.cavity(Town.type[k], Town.size[k], Town.tall[k], bx, 0.05f, bz) < 0.1f) {
-                    float tl = 0.90f + 0.08f * hash((int) Math.floor(wx * 1.4f), (int) Math.floor(wz * 1.4f));
-                    r = 0.74f * tl; g = 0.72f * tl; b = 0.78f * tl;   // the room's floor
-                    if (((int) Math.floor(wx * 1.4f) + (int) Math.floor(wz * 1.4f) & 1) == 0) { r *= 0.94f; g *= 0.94f; b *= 0.94f; }
-                }
-            }
-            float pd = (float) Math.hypot(wx - Town.CX, wz - Town.CZ);
-            if (Math.abs(pd - 9f) < 0.25f || Math.abs(pd - 11f) < 0.12f) { r = 0.35f; g = 0.95f; b = 0.85f; }   // inlay
-            dh = 0.02f;
-            mat = M_STONE;
-            paved = true;
-            roadA = 1f;
-        }
         // dirt cart track outside town (two ruts with a grassy crown)
         if (!paved) {
             float trackN = 1f - townN, trackE = 0f;

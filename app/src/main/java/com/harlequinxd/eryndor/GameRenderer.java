@@ -76,10 +76,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     // the player: one voxel woman rigged to a skeleton (tools/build_woman.py), seen from behind
     private final Woman woman = new Woman();
     private int womanDTex, womanCTex, womanBTex;
-    private int townTex;
     private float charYaw = 0f, walkPhase, walkAmt;
     private double lastPx = Double.NaN, lastPz;
     private double camDist = 2.8;
+    /** First person for now (no hands drawn); true brings back the third-person view of her. */
+    static final boolean THIRD_PERSON = false;
     // terrain volume (tunnels, caves, overhangs): 3D RG8, distance + sky openness
     // ground texture sets, one array layer each (order = layer index in scene.frag):
     // colour, and normal map + height packed together; tiling, point sampled
@@ -183,7 +184,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         matTex = GLUtil.luminance(WorldTextures.matWin, WorldTextures.GROUND_SIZE, true);
         fernTex = GLUtil.cells(WorldTextures.fernWin, WorldTextures.FERN_GRID);
         treeTex = GLUtil.cells(WorldTextures.treeWin, WorldTextures.TREE_GRID);
-        townTex = GLUtil.cells(Town.texture(), Town.N);
         cloudTex = GLUtil.texture(cloudData, WorldTextures.CLOUD_SIZE, false);
         leafAtlasTex = GLUtil.atlas(LeafAtlas.build(), LeafAtlas.W, LeafAtlas.H);
         womanDTex = GLUtil.texture3D(woman.dist, woman.nx, woman.ny, woman.nz, GLES30.GL_R8, GLES30.GL_RED, true);
@@ -371,7 +371,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         float camYaw = yaw, camPitch = pitch;
         double camX = px, camZ = pz;
         float camY = eyeY;
-        boolean third = slot < 0 && !Float.isNaN(eyeY);
+        boolean third = THIRD_PERSON && slot < 0 && !Float.isNaN(eyeY);
         if (third) {
             // behind her and a little above, over her right shoulder; pulled in where rock is in the way
             double tx = px, ty = eyeY - EYE_HEIGHT + 1.55, tz = pz;
@@ -384,7 +384,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
                 double qx = tx - fx * dist, qz = tz - fz * dist;
                 double qy = ty - fy * dist;
                 if (qy - (WorldTextures.floorAt(qx, qz) + WorldTextures.detailAt(qx, qz)) < 0.3) break;
-                if (Town.dist(qx, qy, qz) < 0.3f) break;                // nor through the town's walls
                 dist += 0.1;
             }
             dist = Math.max(0.3, dist - 0.1);
@@ -424,11 +423,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(u(sceneProg, "uPitch"), camPitch);
         GLES20.glUniform4f(u(sceneProg, "uPreview"), pvX, pvY, pvZ, slot >= 0 ? slot : -1f);
         GLES20.glUniform1f(u(sceneProg, "uPreviewYaw"), previewYaw);
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE4);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, townTex);
-        GLES20.glUniform1i(u(sceneProg, "uTown"), 4);
-        GLES20.glUniform3f(u(sceneProg, "uTownO"), (float) (Town.X0 - offX), (float) (Town.Z0 - offZ), Town.GROUND);
-        GLES20.glUniform3f(u(sceneProg, "uPlayer"), (float) (px - offX), Float.isNaN(eyeY) ? 0f : eyeY - EYE_HEIGHT, (float) (pz - offZ));
         bindTex3D(11, womanDTex, "uWomanD");
         bindTex3D(12, womanCTex, "uWomanC");
         bindTex3D(13, womanBTex, "uWomanB");
@@ -450,13 +444,13 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform3f(u(sceneProg, "uCam"), (float) (camX - offX), camY, (float) (camZ - offZ));
         GLES20.glUniform2f(u(sceneProg, "uCloudO"), (float) mod(px + windX, 2000.0), (float) mod(pz + windZ, 2000.0));
         GLES20.glUniform3fv(u(sceneProg, "uSunDir"), 1, sky.sunDir, 0);
-        // an alien sky: the blue turned toward teal overhead, the horizon toward rose and peach
-        GLES20.glUniform3fv(u(sceneProg, "uSkyTop"), 1, hueTurn(sky.skyTop, -0.95f, 1.15f), 0);
-        GLES20.glUniform3fv(u(sceneProg, "uSkyHor"), 1, hueTurn(sky.skyHor, 2.6f, 1.35f), 0);
+        // a storybook sky: the real sky's colours, a little deeper and richer
+        GLES20.glUniform3fv(u(sceneProg, "uSkyTop"), 1, hueTurn(sky.skyTop, 0.04f, 1.15f), 0);
+        GLES20.glUniform3fv(u(sceneProg, "uSkyHor"), 1, hueTurn(sky.skyHor, -0.03f, 1.08f), 0);
         GLES20.glUniform3fv(u(sceneProg, "uSunCol"), 1, sky.sunCol, 0);
         GLES20.glUniform3fv(u(sceneProg, "uAmbient"), 1, sky.ambient, 0);
-        GLES20.glUniform3fv(u(sceneProg, "uFogCol"), 1, hueTurn(sky.fogCol, 2.6f, 1.25f), 0);
-        GLES20.glUniform3fv(u(sceneProg, "uMtnCol"), 1, hueTurn(sky.mtnCol, 2.2f, 1.3f), 0);
+        GLES20.glUniform3fv(u(sceneProg, "uFogCol"), 1, hueTurn(sky.fogCol, 0f, 1.05f), 0);
+        GLES20.glUniform3fv(u(sceneProg, "uMtnCol"), 1, hueTurn(sky.mtnCol, 0.15f, 1.1f), 0);
         GLES20.glUniform1f(u(sceneProg, "uFog"), sky.fogDensity);
         GLES20.glUniform1f(u(sceneProg, "uStars"), sky.stars);
         GLES20.glUniform1f(u(sceneProg, "uCover"), sky.cover);
@@ -614,7 +608,6 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         // step up anything up to a stair's height (tunnel lips, rocks, banks); taller is a wall
         if (ahead - here > MAX_STEP_UP) return;
         // the town's walls are solid (doorways are open, the doors slide aside as she nears them)
-        if (Town.dist(ax, ahead + 0.4, az) < 0.25f || Town.dist(ax, ahead + 1.4, az) < 0.25f) return;
         float[] tr = WorldTextures.trunkNear(ax, az);           // tree trunks are solid
         TreeLibrary lib = library;
         if (tr != null && lib != null) {

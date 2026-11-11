@@ -11,9 +11,9 @@ precision highp sampler2D;
 // MOBILE (defined by the game on phones): fewer steps, shorter reach, no traced bounce light, so it
 // runs fast on a phone GPU; the look stays the same up close
 #ifdef MOBILE
-const int MARCH_STEPS = 150, TREE_CELLS = 14, CHAR_STEPS = 64, POM_STEPS = 6, TOWN_STEPS = 56;
+const int MARCH_STEPS = 150, TREE_CELLS = 14, CHAR_STEPS = 64, POM_STEPS = 6;
 #else
-const int MARCH_STEPS = 260, TREE_CELLS = 26, CHAR_STEPS = 110, POM_STEPS = 12, TOWN_STEPS = 96;
+const int MARCH_STEPS = 260, TREE_CELLS = 26, CHAR_STEPS = 110, POM_STEPS = 12;
 #endif
 
 in vec2 vUv;
@@ -36,11 +36,6 @@ uniform float uPreviewYaw;
 // the player, a woman explorer: ONE voxel model in her bind pose (tools/build_woman.py), rigged to
 // a 16-bone skeleton; the shader maps points back into the bind pose (inverse skinning)
 uniform float uCharShow;
-// the alien town (Town.java): 15 x 15 lots of 14 m, per lot RGBA = type * 40, rotation * 64 + seed,
-// size, height
-uniform highp sampler2D uTown;
-uniform vec3 uTownO;                 // the lot grid's corner (shader frame) and the town's floor height
-uniform vec3 uPlayer;                // the player's feet (shader frame): doors open as she comes near
 uniform highp sampler3D uWomanD;     // signed distance, +-4 cm
 uniform highp sampler3D uWomanC;     // colour, material (0 skin, 1 shirt, 2 leather, 3 hair, 4 brass, 5 cargo)
 uniform highp sampler3D uWomanB;     // skinning: bone a, bone b, weight of a
@@ -103,8 +98,7 @@ float volDist(vec3 p) {
     float top = textureLod(uHeight, p.xz / WIN, 0.0).r * HMAX;
     return clamp((p.y - top) * 0.6, -4.0, 4.0);
 }
-float townInside(vec3 p);
-float volOpen(vec3 p) { return 1.0 - 0.55 * townInside(p); }   // open sky, dimmer inside buildings
+float volOpen(vec3 p) { return 1.0; }                           // open sky everywhere
 vec3 volNormal(vec3 p, float e) {
     const vec2 k = vec2(1.0, -1.0);
     return normalize(k.xyy * volDist(p + k.xyy * e) + k.yyx * volDist(p + k.yyx * e)
@@ -148,165 +142,18 @@ float coverage(float n) {
 float gOpenSky = 1.0;    // set by skyColor: how much open sky (not cloud, peak or tower) that direction shows
 
 // ---------------------------------------------------------------------------------------------
-// The alien town: per-pixel buildings from distance-field shapes (must match Town.java).
-const float LOT = 14.0;
-const int TOWN_N = 15;
-float tEll(vec3 p, vec3 r) {
-    float k0 = length(p / r), k1 = length(p / (r * r));
-    return k0 * (k0 - 1.0) / max(k1, 1e-6);
-}
-float tSmin(float a, float b, float k) {
-    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
-    return mix(b, a, h) - k * h * (1.0 - h);
-}
-float tBox(vec3 p, vec3 h, float r) {
-    vec3 q = abs(p) - h + r;
-    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
-}
-float tFront(int t, float s) { return t == 1 ? 4.1 * s : (t == 2 ? 2.4 * s + 0.35 : (t == 3 ? 4.0 * s : 3.1 * s)); }
-float tBody(int t, float s, float h, vec3 q) {
-    if (t == 1) return tEll(q + vec3(0.0, 0.8, 0.0), vec3(4.3 * s, 4.6 * s * h, 4.3 * s));
-    if (t == 2) {
-        float H = 11.0 * h * s;
-        float r = s * (2.4 + 0.45 * sin(q.y * 0.45)) * (1.0 - 0.30 * smoothstep(3.0, H, q.y));
-        float o = max(length(q.xz) - r, max(q.y - H, -q.y - 1.0));
-        return tSmin(o, length(q - vec3(0.0, H + 1.0, 0.0)) - 1.5 * s, 0.6);
-    }
-    if (t == 3) {
-        float a = tEll(q + vec3(0.0, 0.5, -1.2 * s), vec3(3.0 * s, 3.4 * s * h, 3.0 * s));
-        float b = tEll(q + vec3(2.4 * s, 0.5, 1.6 * s), vec3(2.6 * s, 3.0 * s * h, 2.6 * s));
-        float c = tEll(q + vec3(-2.5 * s, 0.5, 1.4 * s), vec3(2.3 * s, 2.7 * s * h, 2.3 * s));
-        return tSmin(tSmin(a, b, 0.8), c, 0.8);
-    }
-    return tEll(q + vec3(0.0, 0.6, 0.0), vec3(4.8 * s, 3.6 * s * h, 3.2 * s));
-}
-float tCavity(int t, float s, float h, vec3 q) {
-    const float w = 0.35;
-    if (t == 1) return tEll(q + vec3(0.0, 0.8, 0.0), vec3(4.3 * s - w, 4.6 * s * h - w, 4.3 * s - w));
-    if (t == 2) {
-        float r = s * (2.4 + 0.45 * sin(q.y * 0.45)) - w;
-        return max(length(q.xz) - r, max(q.y - 3.4, -q.y - 1.0));
-    }
-    if (t == 3) {
-        float a = tEll(q + vec3(0.0, 0.5, -1.2 * s), vec3(3.0 * s - w, 3.4 * s * h - w, 3.0 * s - w));
-        float b = tEll(q + vec3(2.4 * s, 0.5, 1.6 * s), vec3(2.6 * s - w, 3.0 * s * h - w, 2.6 * s - w));
-        float c = tEll(q + vec3(-2.5 * s, 0.5, 1.4 * s), vec3(2.3 * s - w, 2.7 * s * h - w, 2.3 * s - w));
-        return tSmin(tSmin(a, b, 0.8), c, 0.8);
-    }
-    return tEll(q + vec3(0.0, 0.6, 0.0), vec3(4.8 * s - w, 3.6 * s * h - w, 3.2 * s - w));
-}
-// the lot under p: returns the building's local point q (door toward +z) and its parameters
-bool townLot(vec3 p, out vec3 q, out int t, out float s, out float h, out float seed, out vec2 centre, out int rot) {
-    vec2 g = (p.xz - uTownO.xy) / LOT;
-    ivec2 c = ivec2(floor(g));
-    t = 0;
-    if (c.x < 0 || c.y < 0 || c.x >= TOWN_N || c.y >= TOWN_N) return false;
-    vec4 L = texelFetch(uTown, c, 0) * 255.0;
-    t = int(L.r / 40.0 + 0.5);
-    rot = int(L.g / 64.0);
-    seed = (L.g - float(rot) * 64.0) / 63.0;
-    s = 0.8 + L.b / 255.0 * 0.4;
-    h = 0.8 + L.a / 255.0 * 0.6;
-    centre = uTownO.xy + (vec2(c) + 0.5) * LOT;
-    vec2 l = p.xz - centre;
-    vec2 r = rot == 1 ? vec2(-l.y, l.x) : (rot == 2 ? -l : (rot == 3 ? vec2(l.y, -l.x) : l));
-    q = vec3(r.x, p.y - uTownO.z, r.y);
-    return t != 0;
-}
-// walls, the door and the monument; part: 0 outer wall, 1 inner wall, 2 door panel, 3 door frame,
-// 4 the monument, 5 its glowing orb
-float townShape(vec3 q, int t, float s, float h, vec2 doorW, out int part, out float doorOpen) {
-    part = 0;
-    doorOpen = 0.0;
-    if (t == 5) {                                              // the plaza monument: twisted spire, orb
-        float a = q.y * 0.35;
-        vec2 rq = vec2(q.x * cos(a) - q.z * sin(a), q.x * sin(a) + q.z * cos(a));
-        float sp = max(max(abs(rq.x), abs(rq.y)) - (1.3 - q.y * 0.075), max(q.y - 16.0, -q.y));
-        float base = tBox(q - vec3(0.0, 0.4, 0.0), vec3(2.6, 0.4, 2.6), 0.3);
-        float orb = length(q - vec3(0.0, 18.2 + 0.3 * sin(uTime * 0.8), 0.0)) - 1.1;
-        float d = min(sp * 0.7, base);
-        part = 4;
-        if (orb < d) { d = orb; part = 5; }
-        return d;
-    }
-    float f = tFront(t, s);
-    float o = tBody(t, s, h, q);
-    float porch = tBox(q - vec3(0.0, 1.45, f - 0.3), vec3(1.15, 1.45, 0.9), 0.45);
-    o = tSmin(o, porch, 0.3);
-    float cav = tCavity(t, s, h, q);
-    float wallIn = cav;
-    cav = min(cav, tBox(q - vec3(0.0, 1.15, f - 0.5), vec3(0.70, 1.15, 1.2), 0.25));
-    float d = max(o, -cav);
-    part = (-cav < o - 0.02) ? 0 : 1;
-    if (wallIn > -0.05 && -cav >= o - 0.02) part = 1;
-    // the door: two panels in the porch that slide apart into its sides as she comes near
-    float zd = f + 0.45;
-    doorOpen = smoothstep(3.6, 1.9, length(uPlayer.xz - doorW));
-    float slide = doorOpen * 0.72;
-    vec3 dq = q - vec3(0.0, 1.13, zd);
-    float panel = tBox(vec3(abs(dq.x) - 0.36 - slide, dq.y, dq.z), vec3(0.36, 1.12, 0.045), 0.02);
-    panel = max(panel, abs(dq.x) - 1.12);                       // hidden once inside the porch walls
-    float frame = max(tBox(dq - vec3(0.0, 0.0, 0.13), vec3(0.88, 1.32, 0.09), 0.06),
-                      -tBox(dq - vec3(0.0, 0.0, 0.13), vec3(0.70, 1.15, 0.3), 0.08));
-    if (panel < d) { d = panel; part = 2; }
-    if (frame < d) { d = frame; part = 3; }
-    return d;
-}
-// distance to the town from a world point, never stepping over a lot's edge into a building
-float townDist(vec3 p, out int part, out vec3 qo, out int to, out float so, out float ho, out float seedo, out float dOpen) {
-    vec3 q;
-    int t, rot;
-    float s, h, seed;
-    vec2 centre;
-    part = -1;
-    dOpen = 0.0;
-    vec2 g0 = uTownO.xy, g1 = uTownO.xy + float(TOWN_N) * LOT;
-    vec2 outside = max(max(g0 - p.xz, p.xz - g1), 0.0);
-    if (outside.x > 0.0 || outside.y > 0.0) return length(outside) + 0.5;
-    bool any = townLot(p, q, t, s, h, seed, centre, rot);
-    vec2 l = p.xz - centre;
-    float edge = LOT * 0.5 - max(abs(l.x), abs(l.y)) + 1.4;     // buildings keep 1.4 m clear of the lot edge
-    qo = q; to = t; so = s; ho = h; seedo = seed;
-    if (!any) return max(edge, 0.05);
-    float f = tFront(t, s) + 0.45;
-    vec2 dl = vec2(0.0, f);
-    vec2 doorW = centre + (rot == 1 ? vec2(dl.y, -dl.x) : (rot == 2 ? -dl : (rot == 3 ? vec2(-dl.y, dl.x) : dl)));
-    float d = townShape(q, t, s, h, doorW, part, dOpen);
-    return min(d, max(edge, 0.05));
-}
-float townInside(vec3 p) {
-    vec3 q;
-    int t, rot;
-    float s, h, seed;
-    vec2 centre;
-    if (!townLot(p, q, t, s, h, seed, centre, rot) || t == 5) return 0.0;
-    return 1.0 - smoothstep(-0.6, 0.0, tCavity(t, s, h, q));
-}
-
-float townD(vec3 p) {
-    int pt, t;
-    vec3 q;
-    float s, h, sd, o;
-    return townDist(p, pt, q, t, s, h, sd, o);
-}
-
-// ---- an alien world: colours turned round the hue circle (rotation about the grey axis), so
-// meadows grow violet and magenta, earth goes slate teal, rock keeps its greys with a cold cast
-vec3 hueTurn(vec3 c, float a) {
-    const vec3 k = vec3(0.57735);
-    return c * cos(a) + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - cos(a));
-}
-vec3 alienGround(vec3 c) {
-    vec3 r = max(hueTurn(c, 3.25), 0.0);
+// ---- a storybook fantasy palette: natural colours, a touch richer than life
+vec3 fairGround(vec3 c) {
     float l = dot(c, vec3(0.3, 0.59, 0.11));
-    return mix(vec3(l), r, 1.45) * vec3(1.02, 0.92, 1.10);
+    return max(mix(vec3(l), c, 1.18), 0.0) * vec3(1.03, 1.02, 0.96);
 }
-vec3 alienLeaf(vec3 c, float sp) {
-    // each species its own strange colour: cyan, magenta, acid gold, coral, deep violet
-    float a = 1.6 + mod(sp * 1.37, 6.2832) * 0.55;
-    vec3 r = max(hueTurn(c, a), 0.0);
+vec3 fairLeaf(vec3 c, float sp) {
+    // a few species turn: one coppery, one golden, one deep green, the rest summer green
+    float k = mod(sp, 5.0);
+    vec3 tint = k < 1.0 ? vec3(1.45, 0.75, 0.40) : k < 2.0 ? vec3(1.30, 1.10, 0.45)
+              : k < 3.0 ? vec3(0.75, 0.95, 0.80) : vec3(1.0);
     float l = dot(c, vec3(0.3, 0.59, 0.11));
-    return clamp(mix(vec3(l), r, 1.9) * 1.45, 0.0, 1.0);
+    return clamp(mix(vec3(l), c, 1.25) * tint, 0.0, 1.0);
 }
 
 // one moon in the sky: direction m, angular radius r, surface colour; lit by the sun, cratered
@@ -325,7 +172,7 @@ vec3 moonDisc(vec3 d, vec3 sky, vec3 m, float r, vec3 surf, float seed, out floa
     vec3 n = normalize(u * q.x + v * q.y - m * z);
     float lit = max(dot(n, uSunDir), 0.0);
     float crater = 0.80 + 0.20 * vnoise(q * 7.0 + seed) + 0.10 * vnoise(q * 23.0 + seed * 3.0);
-    float band = 0.92 + 0.08 * sin(q.y * 9.0 + vnoise(q * 3.0 + seed) * 4.0);
+    float band = 0.94 + 0.06 * vnoise(q * 2.5 + seed * 5.0);         // maria, not bands
     vec3 face = surf * crater * band * (0.15 + lit * 1.15);
     // the unlit side: by day the sky shows faintly through it, by night it is nearly black
     vec3 dark = mix(sky * 0.80 + surf * 0.05, surf * crater * 0.05, uStars);
@@ -340,14 +187,14 @@ vec3 skyColor(vec3 d) {
     sky += uSunCol * (pow(max(sd, 0.0), 10.0) * 0.30 + pow(max(sd, 0.0), 180.0) * 0.55) * uSunVis;
     sky = mix(sky, vec3(1.0, 0.97, 0.88) * 1.4, smoothstep(0.99905, 0.99935, sd) * uSunVis);
 
-    // two moons: a great banded one, pale violet, and a small rust-red one that moves faster;
+    // two moons: a great silver one and a small pale-blue one that moves faster;
     // both lit by the sun (they show phases) and visible by day too
     float a1 = 0.9 + uTime * 6.2831853 / 3600.0, a2 = -1.2 - uTime * 6.2831853 * 3.0 / 3600.0;
     vec3 m1 = normalize(vec3(sin(a1) * 0.80, 0.50, -cos(a1) * 0.80));
     vec3 m2 = normalize(vec3(sin(a2) * 0.62, 0.78, -cos(a2) * 0.62));
     float c1, c2;
-    sky = moonDisc(d, sky, m1, 0.115, vec3(0.80, 0.74, 0.92), 3.0, c1);
-    sky = moonDisc(d, sky, m2, 0.032, vec3(0.86, 0.48, 0.32), 11.0, c2);
+    sky = moonDisc(d, sky, m1, 0.115, vec3(0.86, 0.86, 0.82), 3.0, c1);
+    sky = moonDisc(d, sky, m2, 0.032, vec3(0.70, 0.80, 0.95), 11.0, c2);
     float moon = max(c1, c2);
     vec2 sg = floor(d.xz / (d.y + 0.25) * 140.0);
     float star = step(0.9935, hash(sg)) * smoothstep(0.02, 0.25, d.y) * (1.0 - moon);
@@ -393,9 +240,9 @@ vec3 skyColor(vec3 d) {
     if (abs(sx) < w && h < top) {
         vec3 tc = vec3(0.09, 0.09, 0.12) * (0.7 + 0.5 * uAmbient) * (0.8 + 0.4 * step(0.0, -sx) * face);
         float glow = smoothstep(0.0045, 0.0015, length(vec2(sx, (h - 0.205) * 0.6))) * (0.25 + uStars);
-        tc += vec3(0.35, 0.95, 0.85) * glow;
+        tc += vec3(1.0, 0.62, 0.25) * glow;                // a wizard's lamp at the top
         sky = mix(tc, uFogCol, haze * 0.6);
-        sky += vec3(0.35, 0.95, 0.85) * glow * 0.6;
+        sky += vec3(1.0, 0.62, 0.25) * glow * 0.6;
         gOpenSky = 0.0;
     }
 
@@ -1122,13 +969,15 @@ void main() {
         vec3 plain = toLin(uAmbient) * SKY_E * mix(0.05, 1.0, open) * (0.75 + 0.25 * n.y);
         gGI = mix(gi, plain, far);
     }
-    albedo = alienGround(albedo);
+    albedo = fairGround(albedo);
     vec3 land = pbr(albedo * mix(1.0, 0.70, wetK), n, -d, rough, 0.0, sunLit, open, 1.0, lamp, trans);
-    // glowing spores in the alien turf, waking at dusk
-    if (isGrass > 0.5 && T < 40.0) {
-        vec2 cellg = floor(wp * 9.0);
-        float spore = step(0.982, hash(cellg)) * smoothstep(0.42, 0.10, length(fract(wp * 9.0) - 0.5));
-        land += mix(vec3(0.15, 0.95, 0.85), vec3(0.85, 0.30, 0.95), hash(cellg + 5.0)) * spore * (0.15 + 0.85 * uStars) * 0.8;
+    // fireflies over the meadows at night, drifting and blinking
+    if (isGrass > 0.5 && T < 40.0 && uStars > 0.05) {
+        vec2 fw = wp + vec2(sin(uTime * 0.3 + wp.y), cos(uTime * 0.27 + wp.x)) * 0.3;
+        vec2 cellg = floor(fw * 3.0);
+        float fly = step(0.985, hash(cellg)) * smoothstep(0.16, 0.02, length(fract(fw * 3.0) - 0.5));
+        float blink = smoothstep(0.3, 1.0, sin(uTime * 2.3 + hash(cellg + 3.0) * 40.0));
+        land += vec3(1.0, 0.85, 0.35) * fly * blink * uStars * 1.6;
     }
     gGI = vec3(-1.0);
     float fres = 0.25 + 0.75 * pow(1.0 - min(max(-d.y, 0.0), 1.0), 5.0);
@@ -1148,100 +997,6 @@ void main() {
     vec3 missCol = d.y > 0.0 ? sky : uFogCol;
     vec3 col = mix(missCol, ground, hit);
     col += uFlash * vec3(0.55, 0.60, 0.75) * (0.4 + 0.6 * (1.0 - hit)) * open;
-
-    // ---- the alien town: march its buildings, up to whatever the land hit
-    {
-        vec2 g0 = uTownO.xy - 1.0, g1 = uTownO.xy + float(TOWN_N) * LOT + 1.0;
-        vec3 bmin = vec3(g0.x, uTownO.z - 1.5, g0.y), bmax = vec3(g1.x, uTownO.z + 22.0, g1.y);
-        vec3 inv = 1.0 / d;
-        vec3 ta = (bmin - ro) * inv, tb = (bmax - ro) * inv;
-        vec3 tn = min(ta, tb), tf = max(ta, tb);
-        float tA = max(max(tn.x, tn.y), max(tn.z, 0.05)), tB = min(min(min(tf.x, tf.y), tf.z), hit > 0.5 ? T : FAR);
-        if (tB > tA) {
-            float t = tA;
-            bool got = false;
-            int part, bt;
-            vec3 bq;
-            float bs, bh, bseed, dOpen;
-            for (int i = 0; i < TOWN_STEPS; i++) {
-                if (t > tB) break;
-                float dd = townDist(ro + d * t, part, bq, bt, bs, bh, bseed, dOpen);
-                if (dd < 0.004 + t * 0.0012) { got = true; break; }
-                t += dd * 0.9;
-            }
-            if (got) {
-                vec3 p = ro + d * t;
-                townDist(p, part, bq, bt, bs, bh, bseed, dOpen);
-                const vec2 kk = vec2(1.0, -1.0);
-                const float e = 0.015;
-                vec3 n = normalize(kk.xyy * townD(p + kk.xyy * e) + kk.yyx * townD(p + kk.yyx * e)
-                                 + kk.yxy * townD(p + kk.yxy * e) + kk.xxx * townD(p + kk.xxx * e));
-                // pearly alien chitin, one colour per building, mottled and ribbed
-                vec3 pal = bseed < 0.2 ? vec3(0.55, 0.80, 0.78) : (bseed < 0.4 ? vec3(0.72, 0.64, 0.86) :
-                           (bseed < 0.6 ? vec3(0.86, 0.83, 0.74) : (bseed < 0.8 ? vec3(0.88, 0.58, 0.52) : vec3(0.50, 0.47, 0.66))));
-                float ang = atan(bq.z, bq.x);
-                float mott = vnoise(bq.xz * 1.7 + bq.y * 0.9 + bseed * 40.0) * 0.6 + vnoise(bq.xz * 6.0 - bq.y * 3.0) * 0.4;
-                vec3 alb = pal * (0.82 + 0.28 * mott);
-                float rough = 0.42, metal = 0.0;
-                vec3 glow = vec3(0.0);
-                float night = 0.35 + 1.4 * uStars;
-                vec3 lamp = bseed < 0.5 ? vec3(0.35, 1.0, 0.88) : vec3(1.0, 0.70, 0.35);
-                if (part == 0) {
-                    float rib = bt == 4 ? pow(abs(cos(bq.x * 1.6)), 14.0) : pow(abs(cos(ang * 5.0)), 16.0);
-                    alb *= 1.0 - 0.30 * rib * step(0.3, bq.y);
-                    // windows: a ring of round ones, or bands up a tower; none by the door
-                    bool nearDoor = bq.z > 0.0 && abs(bq.x) < 1.7;
-                    float win = 0.0;
-                    if (bt == 2) {
-                        float band = fract(bq.y / 3.0 + 0.2);
-                        float wa = fract(ang * 6.0 / 6.2831853);
-                        win = step(abs(band - 0.5), 0.10) * step(abs(wa - 0.5), 0.28) * step(3.6, bq.y);
-                    } else {
-                        float wa = fract(ang * 9.0 / 6.2831853);
-                        win = smoothstep(0.30, 0.24, length(vec2((wa - 0.5) * 2.2, (bq.y - 2.1) / 0.55)));
-                    }
-                    if (!nearDoor && win > 0.0) { alb = mix(alb, vec3(0.05), win); glow += lamp * win * night; }
-                } else if (part == 1) {                               // inside: pale smooth walls, a glowing strip
-                    alb = vec3(0.80, 0.78, 0.86) * (0.9 + 0.1 * mott);
-                    float strip = smoothstep(0.06, 0.02, abs(bq.y - 2.05));
-                    glow += lamp * strip * 0.9 + alb * lamp * 0.22;          // the strips light the room
-                    rough = 0.6;
-                } else if (part == 2) {                               // the door: dark teal metal, glyphs, a lit seam
-                    float f = tFront(bt, bs) + 0.45;
-                    vec2 dq = vec2(abs(bq.x) - 0.36 - dOpen * 0.72, bq.y - 1.13);
-                    alb = vec3(0.16, 0.28, 0.32);
-                    float gl = abs(sin(length(dq - vec2(0.0, 0.25)) * 22.0));
-                    float glyph = step(gl, 0.18) * step(length(dq - vec2(0.0, 0.25)), 0.30);
-                    glyph += step(abs(dq.y + 0.55), 0.015) + step(abs(dq.y - 0.85), 0.015);
-                    alb *= 1.0 - 0.45 * clamp(glyph, 0.0, 1.0);
-                    float seam = smoothstep(0.035, 0.0, abs(abs(bq.x) - dOpen * 0.72)) * step(abs(bq.y - 1.13), 1.1);
-                    glow += vec3(0.35, 1.0, 0.9) * seam * (1.0 - dOpen) * 1.5;
-                    glow += vec3(0.35, 1.0, 0.9) * clamp(glyph, 0.0, 1.0) * 0.25 * night;
-                    rough = 0.32; metal = 0.75;
-                } else if (part == 3) {                               // the door frame glows
-                    alb = pal * 0.7;
-                    glow += vec3(0.35, 1.0, 0.85) * (0.45 + 0.5 * night) * (0.75 + 0.25 * sin(uTime * 2.0));
-                } else if (part == 4) {                               // the monument: black glass
-                    alb = vec3(0.10, 0.09, 0.14);
-                    rough = 0.15;
-                    glow += vec3(0.6, 0.3, 1.0) * step(0.97, fract(bq.y * 1.5)) * night;
-                } else {                                              // its floating orb
-                    alb = vec3(1.0);
-                    glow += mix(vec3(0.3, 1.0, 0.9), vec3(1.0, 0.4, 0.9), 0.5 + 0.5 * sin(uTime * 0.7)) * 2.2;
-                }
-                float bo = volOpen(p + n * 0.25);
-                float bdark = clamp(1.0 - bo * (1.0 - uStars * 0.85), 0.0, 1.0);
-                float cloud = coverage(cloudField(uCloudO + (p.xz - ro.xz)));
-                vec3 bc = pbr(alb, n, -d, rough, metal, 1.0 - 0.85 * cloud, bo, 1.0, 1.4 / (1.0 + t * t * 0.09) * bdark, 0.0);
-                bc += glow;
-                bc = mix(bc, mix(vec3(0.0), uFogCol, max(bo, 0.3)), 1.0 - exp(-t * uFog));
-                col = bc;
-                T = t;
-                hit = 1.0;
-                shaftMask = 0.0;
-            }
-        }
-    }
 
     // ---- the player (third person): march her inside her bounding sphere
     if (uCharShow > 0.5) {
@@ -1398,8 +1153,8 @@ void main() {
             vec3 alb, tn;
             float isLeaf;
             shadeTree(bestSp, bestPid, bestUv, bestHl, bestRdl, bestYaw, alb, tn, isLeaf);
-            // alien flora: strange leaf colours per species, pale chalky bark with a violet cast
-            alb = isLeaf > 0.5 ? alienLeaf(alb, float(bestSp)) : mix(alb, vec3(0.70, 0.66, 0.74), 0.55) * vec3(0.95, 0.9, 1.05);
+            // storybook woods: rich greens with a few trees turning copper and gold
+            if (isLeaf > 0.5) alb = fairLeaf(alb, float(bestSp));
             // physically based: bark rough, leaves a little glossy and translucent; darker low down
             float tao = 0.70 + 0.30 * clamp(bestHl.y / max(uTreeMeta[bestSp * 6 + 5].w, 1.0), 0.0, 1.0);
             float tdark = clamp(uStars * 0.85, 0.0, 1.0);
@@ -1407,8 +1162,6 @@ void main() {
             vec3 tnf = dot(tn, -d) < 0.0 && isLeaf > 0.5 ? -tn : tn;          // leaves are two-sided
             vec3 tc = pbr(alb, tnf, -d, isLeaf > 0.5 ? 0.55 : 0.88, 0.0, tao, 1.0, tao, tlamp, isLeaf * 0.9);
             tc = mix(tc, uFogCol, 1.0 - exp(-bestT * uFog));
-            // leaf tips glow softly (brighter at night)
-            if (isLeaf > 0.5) tc += alienLeaf(vec3(0.2, 0.9, 0.3), float(bestSp)) * step(0.94, hash(bestUv * 37.0 + float(bestPid))) * (0.03 + 0.22 * uStars);
             col = tc + uFlash * vec3(0.55, 0.60, 0.75) * 0.4;
             shaftMask = 0.0;
         }
