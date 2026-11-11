@@ -68,6 +68,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
     private int[] cloudData;
     /** Streams the world in 32 m chunks around the player (the GPU holds a window of it). */
     private final ChunkStreamer streamer = new ChunkStreamer();
+    private final FarLand farLand = new FarLand();
+    private int farTex;
     private final java.util.ArrayList<WorldTextures.Chunk2D> fresh2 = new java.util.ArrayList<>();
     volatile TreeLibrary library;
     private int treePrimTex, treeCellTex, treeIdxTex, leafAtlasTex, uploadedTreeVersion = -1;
@@ -144,6 +146,8 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         streamer.lib = lib;
         Loading.set("Raising the land around you", 0.06f);
         streamer.loadAll(px, pz, 0.06f, 0.80f);
+        Loading.set("Mapping the far hills", 0.81f);
+        farLand.buildNow(px, pz);
         Loading.set("Shaping your hands", 0.825f);
         try (InputStream rig = assets.open("woman/rig.txt"); InputStream data = assets.open("woman/woman.vox")) {
             woman.load(rig, data);
@@ -184,6 +188,7 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         matTex = GLUtil.luminance(WorldTextures.matWin, WorldTextures.GROUND_SIZE, true);
         fernTex = GLUtil.cells(WorldTextures.fernWin, WorldTextures.FERN_GRID);
         treeTex = GLUtil.cells(WorldTextures.treeWin, WorldTextures.TREE_GRID);
+        farTex = GLUtil.linearRGBA(farLand.take(), FarLand.N);
         cloudTex = GLUtil.texture(cloudData, WorldTextures.CLOUD_SIZE, false);
         leafAtlasTex = GLUtil.atlas(LeafAtlas.build(), LeafAtlas.W, LeafAtlas.H);
         womanDTex = GLUtil.texture3D(woman.dist, woman.nx, woman.ny, woman.nz, GLES30.GL_R8, GLES30.GL_RED, true);
@@ -423,6 +428,10 @@ final class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(u(sceneProg, "uPitch"), camPitch);
         GLES20.glUniform4f(u(sceneProg, "uPreview"), pvX, pvY, pvZ, slot >= 0 ? slot : -1f);
         GLES20.glUniform1f(u(sceneProg, "uPreviewYaw"), previewYaw);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE4);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, farTex);
+        GLES20.glUniform1i(u(sceneProg, "uFar"), 4);
+        GLES20.glUniform3f(u(sceneProg, "uFarO"), (float) (farLand.cornerX - offX), (float) (farLand.cornerZ - offZ), 1f / FarLand.SIZE);
         bindTex3D(11, womanDTex, "uWomanD");
         bindTex3D(12, womanCTex, "uWomanC");
         bindTex3D(13, womanBTex, "uWomanB");
@@ -538,6 +547,11 @@ final class GameRenderer implements GLSurfaceView.Renderer {
             streamer.invalidateGround();
         }
         streamer.update(sx, sz);
+        farLand.update(sx, sz);
+        byte[] far = farLand.take();
+        if (far != null) {                                  // the far map moved with you
+            GLUtil.subCells(farTex, far, 0, 0, FarLand.N, FarLand.N);
+        }
         fresh2.clear();
         streamer.drain(fresh2, 12);
         if (fresh2.isEmpty()) return;

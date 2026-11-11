@@ -11,9 +11,11 @@ precision highp sampler2D;
 // MOBILE (defined by the game on phones): fewer steps, shorter reach, no traced bounce light, so it
 // runs fast on a phone GPU; the look stays the same up close
 #ifdef MOBILE
-const int MARCH_STEPS = 150, TREE_CELLS = 14, CHAR_STEPS = 64, POM_STEPS = 6;
+const int MARCH_STEPS = 150, TREE_CELLS = 14, CHAR_STEPS = 64, POM_STEPS = 6, FAR_STEPS = 40;
+const float FAR_END = 1800.0;
 #else
-const int MARCH_STEPS = 260, TREE_CELLS = 26, CHAR_STEPS = 110, POM_STEPS = 12;
+const int MARCH_STEPS = 260, TREE_CELLS = 26, CHAR_STEPS = 110, POM_STEPS = 12, FAR_STEPS = 72;
+const float FAR_END = 2000.0;   // the far land (FarLand.java) reaches 2 km each way
 #endif
 
 in vec2 vUv;
@@ -21,6 +23,9 @@ out vec4 fragColor;
 
 uniform sampler2D uGround;   // rgb = ground colour, a = 0 open water, 0.5..1 land (lit fraction: tree shadows)
 uniform sampler2D uCloud;
+// the far land beyond the detailed window: 16 m texels, r height, g woodland, b river, a conifers
+uniform sampler2D uFar;
+uniform vec3 uFarO;          // its corner (shader frame) and 1 / its size in metres
 uniform sampler2D uHeight;   // r = open-air ground surface (the volume below holds tunnels and caves)
 uniform sampler2D uDetail;   // fine relief on the floor: grass, pebbles, shrubs, rocks, walls (0..3 m)
 uniform sampler2D uMat;      // material id per texel: 0 grass, 1 earth, 2 stone, 3 wood, 4 water, 5 plant
@@ -793,6 +798,50 @@ float rockTex(vec3 p) {
     return (0.62 + 0.45 * n) * strata;
 }
 
+// ---- the far land: a coarse heightfield out to 2 km, woods raised as a canopy
+vec4 farTexel(vec2 xz) { return textureLod(uFar, (xz - uFarO.xy) * uFarO.z, 0.0); }
+float farH(vec2 xz) {
+    vec4 f = farTexel(xz);
+    return f.r * HMAX + f.g * (9.0 + 4.0 * f.a) - f.b * 1.5;
+}
+bool farMarch(vec3 ro, vec3 d, float t0, out float tHit) {
+    float t = t0, prev = t0;
+    tHit = -1.0;
+    for (int i = 0; i < FAR_STEPS; i++) {
+        vec3 p = ro + d * t;
+        float dh = p.y - farH(p.xz);
+        if (dh < 0.0) { tHit = t; break; }
+        if (t > FAR_END || (d.y > 0.0 && p.y > HMAX + 14.0)) break;
+        prev = t;
+        t += max(dh * 0.8, t * 0.015);
+    }
+    if (tHit < 0.0) return false;
+    float a = prev, b = tHit;
+    for (int k = 0; k < 5; k++) {
+        float m = 0.5 * (a + b);
+        vec3 p = ro + d * m;
+        if (p.y < farH(p.xz)) b = m; else a = m;
+    }
+    tHit = b;
+    return true;
+}
+// the far land's colour at a point, lit by sun and sky, before fog
+vec3 farShade(vec3 p, vec3 d, float T) {
+    vec4 f = farTexel(p.xz);
+    float e = 10.0;
+    vec3 n = normalize(vec3(farH(p.xz - vec2(e, 0.0)) - farH(p.xz + vec2(e, 0.0)), 2.0 * e,
+                            farH(p.xz - vec2(0.0, e)) - farH(p.xz + vec2(0.0, e))));
+    float v = vnoise(p.xz / 37.0) * 0.6 + vnoise(p.xz / 11.0) * 0.4;
+    vec3 meadow = mix(vec3(0.33, 0.45, 0.17), vec3(0.42, 0.47, 0.20), v);
+    vec3 wood = mix(vec3(0.14, 0.26, 0.09), vec3(0.07, 0.16, 0.08), f.a) * (0.75 + 0.5 * v);
+    vec3 alb = mix(meadow, wood, f.g);
+    alb = mix(alb, vec3(0.42, 0.40, 0.36) * (0.8 + 0.3 * v), smoothstep(0.80, 0.62, n.y) * (1.0 - f.g));   // rock
+    gGI = vec3(-1.0);
+    vec3 c = pbr(alb, n, -d, f.g > 0.5 ? 0.85 : 0.95, 0.0, 1.0, 1.0, 0.85 + 0.15 * (1.0 - f.g), 0.0, f.g * 0.4);
+    vec3 wc = mix(uSkyHor, uSkyTop, 0.35) * 0.65;                                  // river: the sky in it
+    return mix(c, wc, f.b);
+}
+
 void main() {
     // ---- view ray
     vec2 ndc = vUv * 2.0 - 1.0;
@@ -991,11 +1040,35 @@ void main() {
         float keep = gOpenSky;
         vec3 horizon = skyColor(normalize(vec3(d.x, 0.004, d.z)));
         gOpenSky = keep;
-        ground = mix(ground, mix(horizon, fogc, fog), smoothstep(FAR * 0.62, FAR - 2.0, T) * max(open, camOpen));
+        // the last stretch of the detailed window blends into the far land at the same spot
+        float fb = smoothstep(FAR * 0.62, FAR - 2.0, T) * max(open, camOpen) * hit;
+        if (fb > 0.0) {
+            vec3 fl = mix(farShade(hp, d, T), fogc, fog);
+            fl = mix(fl, horizon, smoothstep(FAR_END * 0.55, FAR_END, T));
+            ground = mix(ground, fl, fb);
+        }
     }
 
     vec3 missCol = d.y > 0.0 ? sky : uFogCol;
     vec3 col = mix(missCol, ground, hit);
+    // ---- past the detailed window: carry on over the far land out to 2 km
+    if (hit < 0.5 && d.y < 0.08) {
+        float tf;
+        if (farMarch(ro, d, FAR, tf)) {
+            vec3 fp = ro + d * tf;
+            float keep = gOpenSky;
+            vec3 horizon = skyColor(normalize(vec3(d.x, 0.004, d.z)));
+            gOpenSky = keep;
+            vec3 fc = mix(farShade(fp, d, tf), uFogCol, 1.0 - exp(-tf * uFog));
+            col = mix(fc, horizon, smoothstep(FAR_END * 0.55, FAR_END, tf));
+            T = tf;
+            hit = 1.0;
+        } else if (d.y < 0.0) {
+            float keep = gOpenSky;
+            col = skyColor(normalize(vec3(d.x, 0.004, d.z)));      // beyond 2 km: the far range
+            gOpenSky = keep;
+        }
+    }
     col += uFlash * vec3(0.55, 0.60, 0.75) * (0.4 + 0.6 * (1.0 - hit)) * open;
 
     // ---- the player (third person): march her inside her bounding sphere

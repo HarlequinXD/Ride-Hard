@@ -254,6 +254,16 @@ final class GLUtil {
         GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, x, y, w, h, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, bb);
     }
 
+    /** RGBA byte texture, bilinear, clamped, no mipmaps (sampled inside ray loops). */
+    static int linearRGBA(byte[] rgba, int size) {
+        int t = cells(rgba, size);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        return t;
+    }
+
     /** Replace a block of an RGBA cell texture. */
     static void subCells(int tex, byte[] rgba, int x, int y, int w, int h) {
         ByteBuffer bb = scratch(w * h * 4);
